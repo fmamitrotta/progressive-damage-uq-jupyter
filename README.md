@@ -1,10 +1,6 @@
-# Introduction to Progressive Damage Analysis and Uncertainty Quantification with Jupyter Notebooks
+# Introduction to Uncertainty Quantification of Progressive Damage Analysis with Jupyter Notebooks
 
-An open-source, notebook-based introduction to progressive damage modeling of composite
-structures and uncertainty quantification (UQ), aimed at PhD students and researchers with
-no assumed prior background in composites or damage mechanics. The course follows a
-learn-by-doing, computational approach: every concept is introduced alongside a runnable
-model, not just equations.
+An open-source, notebook-based introduction to uncertainty quantification (UQ) of progressive damage modeling of composite structures, aimed at PhD students and researchers with no assumed prior background in composites or damage mechanics. The course follows a learn-by-doing, computational approach: every concept is introduced alongside a runnable model, not just equations.
 
 The material starts from the smallest possible verification case — a single finite element
 — and builds up gradually toward laminate-level analysis and, eventually, a stochastic layer
