@@ -31,16 +31,11 @@ abqpy_notes.md
 # not source.
 scripts/*.json
 
-# Aggregated results written by notebooks/02_monte_carlo_fiber_strength.ipynb across many
-# scripts/build_fiber_tension.py invocations -- same kind of regenerated artifact, just
-# accumulated notebook-side instead of by the script itself.
-scripts/*.csv
-
-# Per-run full history JSON, one file per Monte Carlo sample, written into a campaign
-# subdirectory by notebooks/02_monte_carlo_fiber_strength.ipynb (scripts/mc_runs_off/,
-# scripts/mc_runs_on/) -- nested one level deeper than scripts/*.json above, so needs its
-# own pattern; same regenerated-output rationale.
-scripts/mc_runs*/
+# Every Monte Carlo campaign's output -- per-run full history JSON, summary CSV, and timing
+# JSON -- written under its own notebooks/<nb>-numbered subfolder (runs/nb02/, runs/nb03/,
+# runs/nb04/) by that notebook (or its standalone background driver script). Regenerated
+# output, not source; kept out of scripts/ so results never mix with code.
+runs/
 
 # Python bytecode cache directories
 scripts/__pycache__/
