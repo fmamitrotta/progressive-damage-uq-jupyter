@@ -8,7 +8,8 @@ See notebooks/01_fiber_tension_single_element.ipynb for the full theoretical bac
 and the citation for every parameter set below -- this script intentionally keeps only
 short inline notes, not the full explanation. See notebooks/02_monte_carlo_fiber_strength.ipynb
 for why X_T is treated as a random variable there, sweeping this same script across many
-sampled values.
+sampled values, and notebooks/04_two_parameter_uq_delta_f.ipynb for why G_fT is treated as a
+second, independent random variable there, sweeping both at once.
 
 This script is independent of both notebooks and accepts its parameters on the command
 line as `key=value` tokens (see "Parameters" below) -- it is never written to disk by a
@@ -23,17 +24,22 @@ directly (`python build_fiber_tension.py [key=value ...]`) or, from a notebook, 
 Parameters (all optional, all `key=value` tokens, in any order):
     nlgeom=ON|OFF   geometric nonlinearity for the Static step (default ON)
     X_T=<float>     fiber tensile strength, MPa (default 990.0)
+    G_fT=<float>    fiber-tension fracture energy, N/mm (default 1290.0)
     U1=<float>      target displacement at the loaded edge, mm -- the applied
                     DisplacementBC's magnitude (default 3.0)
-    out=<name>      output JSON filename, written to the current working directory
-                    (default fiber_tension_results.json)
+    out=<path>      output JSON path, resolved against the current working directory if
+                    relative (default fiber_tension_results.json); any parent directories
+                    are created if they don't already exist, so a notebook can point this
+                    straight at its own runs/nb0X/ folder (see CLAUDE.md and each notebook's
+                    own "analysis output" note for the runs/ convention)
 
 Example:
-    python build_fiber_tension.py nlgeom=OFF X_T=990 U1=3.0 out=fiber_tension_results_off.json
+    python build_fiber_tension.py nlgeom=OFF X_T=990 U1=3.0 out=../runs/nb01/fiber_tension_results_nlgeom_off.json
 
 Requires: pip install "abqpy==2023.*" (match the version to your installed Abaqus).
 """
 import json
+import os
 import sys
 
 # ---------------------------------------------------------------------------------
@@ -59,7 +65,7 @@ import sys
 # second pass). None of Abaqus's own injected option names collide with ours, so
 # unrelated tokens (-lmlog, -tmpdir, ...) are silently skipped either way.
 # ---------------------------------------------------------------------------------
-PARAMS = {"nlgeom": "ON", "x_t": "990.0", "u1": "3.0", "out": "fiber_tension_results.json"}
+PARAMS = {"nlgeom": "ON", "x_t": "990.0", "g_ft": "1290.0", "u1": "3.0", "out": "fiber_tension_results.json"}
 argv = sys.argv
 i = 0
 while i < len(argv):
@@ -79,6 +85,7 @@ while i < len(argv):
 
 NLGEOM_ON = PARAMS["nlgeom"].upper() != "OFF"  # anything but a literal "OFF" is treated as ON
 X_T = float(PARAMS["x_t"])  # MPa
+G_FT = float(PARAMS["g_ft"])  # N/mm, fiber-tension fracture energy
 TARGET_U1 = float(PARAMS["u1"])  # mm
 OUT_NAME = PARAMS["out"]
 
@@ -119,7 +126,7 @@ material.HashinDamageInitiation(
 
 material.hashinDamageInitiation.DamageEvolution(
     type=ENERGY,  # the evolution law is driven by fracture energy, not by a displacement value directly
-    table=((1290.0, 757.0, 78.0, 45.5),),  # GfT, GfC, GmT, GmC [N/mm] -- literal source values, see NB1
+    table=((G_FT, 757.0, 78.0, 45.5),),  # GfT, GfC, GmT, GmC [N/mm] -- GfT is the CLI parameter above (default 1290.0, NB1's literal source value); the rest are the notebook's fixed values
     softening=LINEAR,  # stress drops linearly with equivalent displacement once damage initiates -- see NB1
 )
 
@@ -261,6 +268,7 @@ for frame in step.frames:
 results = {
     "nlgeom": "ON" if NLGEOM_ON else "OFF",  # the CLI parameters this run actually used -- carried in the JSON
     "x_t": X_T,  # itself, so every run file is self-describing, not just named by convention
+    "g_ft": G_FT,
     "u1_target": TARGET_U1,
     "u1": [p[1] for p in u1_history],  # drop the time component of each (time, value) pair -- keep just the displacement values
     "rf1": rf1_totals,
@@ -269,7 +277,12 @@ results = {
     "hsn_ft": hsn_ft,
     "hsn_mt": hsn_mt,
 }
-with open(OUT_NAME, "w") as f:  # write to the current working directory (scripts/, when launched via a notebook's subprocess call)
+out_dir = os.path.dirname(OUT_NAME)
+if out_dir and not os.path.isdir(out_dir):  # OUT_NAME may be a bare filename (no directory
+    # component) -- nothing to create then. Abaqus's own Python kernel is Python 2, whose
+    # os.makedirs has no exist_ok kwarg, hence the isdir check instead of a try/except.
+    os.makedirs(out_dir)  # lets a caller point straight at a not-yet-existing runs/nb0X/
+with open(OUT_NAME, "w") as f:  # relative to the current working directory (scripts/, when launched via a notebook's subprocess call)
     json.dump(results, f, indent=2)
 
 odb.close()  # release the .odb file so the notebook (or a future run of this script) can read/overwrite it
