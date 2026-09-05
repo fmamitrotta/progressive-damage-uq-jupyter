@@ -19,6 +19,9 @@
 *.mdl
 *.023
 
+# VS Code workspace settings
+.vscode/
+
 # Claude's notes and settings
 CLAUDE.md
 .claude/
