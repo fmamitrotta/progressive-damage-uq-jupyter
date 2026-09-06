@@ -6,11 +6,6 @@ full-failure displacement"): fitting a line through the two increments either si
 a run's recorded force-displacement history and reading off where the fitted lines actually
 meet or cross zero, rather than trusting the raw recorded increment nearest that event.
 
-Both are needed by more than one notebook (NB2's single-input campaign, NB3's nlgeom=OFF/ON
-convergence study, NB4's two-input campaign), so they live here rather than being redefined in
-each one -- but nothing about the *idea* is new to any notebook after NB1; that is why this
-module is not walked through again the way NB2's own, newly-introduced campaign machinery is.
-
 Neither function touches Abaqus or imports `abaqus`/`odbAccess`, so this module is safe to
 import directly into a live Jupyter kernel.
 """
@@ -42,8 +37,7 @@ def reconstruct_peak(u1, rf1, hsn_ft):
     softening_idx = [init_idx, init_idx + 1]     # two increments immediately after (and including) it
 
     # np.polyfit(..., deg=1) through exactly two points is the exact line through them, not a
-    # least-squares fit (see CLAUDE.md on the two-point-fit convention) -- np.roots then finds
-    # where the elastic and softening lines meet.
+    # least-squares fit -- np.roots then finds where the elastic and softening lines meet.
     elastic = np.polyfit(u1[elastic_idx], rf1[elastic_idx], 1)
     softening = np.polyfit(u1[softening_idx], rf1[softening_idx], 1)
 
