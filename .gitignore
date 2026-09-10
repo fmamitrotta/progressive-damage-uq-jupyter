@@ -34,6 +34,9 @@ abqpy_notes.md
 # not source.
 scripts/*.json
 
+# Debugging scripts
+scripts/inspect_*.py
+
 # Every Monte Carlo campaign's output -- per-run full history JSON, summary CSV, and timing
 # JSON -- written under its own notebooks/<nb>-numbered subfolder (runs/nb02/, runs/nb03/,
 # runs/nb04/) by that notebook (or its standalone background driver script). Regenerated
