@@ -60,12 +60,18 @@ class ConvergenceChecker:
     Call `check(sample)` once per batch, with every completed sample so far.
     '''
 
-    def __init__(self, label, p=0.05, target_rel_half_width=0.01, n_boot=1000, rng=None, unit="N"):
+    def __init__(self, label, p=0.05, target_rel_half_width=0.01, n_boot=1000, rng=None, unit="N",
+                 verbose=True):
         self.label = label                              # a short tag, printed with every check, so several campaigns' logs are easy to tell apart
         self.p = p                                       # which percentile to track (0.05 -> Q5%)
         self.target_rel_half_width = target_rel_half_width  # the 1% stopping target
         self.n_boot = n_boot                             # bootstrap resamples per check (B, sized in NB3 Part 1)
         self.unit = unit                                 # printed after the estimate -- NB3's campaigns are forces (N); a later notebook (NB5) monitoring a displacement passes unit="mm"
+        # One line is printed per check. That log IS the point in NB3, where the criterion
+        # itself is what is being studied; a later notebook running several campaigns at once
+        # only wants their final result, and passes verbose=False to silence the per-check line
+        # without losing anything -- every check is still recorded in self.history either way.
+        self.verbose = verbose
         # A dedicated random generator for THIS checker's own bootstrap draws, kept separate
         # from whatever generator drew the input samples themselves, so the two streams of
         # randomness cannot interfere with each other, and re-used (not re-seeded) across
@@ -86,11 +92,12 @@ class ConvergenceChecker:
         self.history.append(result)   # keep every check, so the convergence plots can show the whole trajectory
 
         passed = result["rel_half_width"] <= self.target_rel_half_width
-        print(f"[{self.label}] n={result['n']:4d}  "
-              f"Q{100 * self.p:.0f}%_hat={result['estimate']:8.2f} {self.unit}  "
-              f"95% CI=[{result['ci_low']:8.2f}, {result['ci_high']:8.2f}]  "
-              f"rel_half_width={100 * result['rel_half_width']:.3f}%  "
-              f"({'CONVERGED' if passed else 'not yet'})")
+        if self.verbose:
+            print(f"[{self.label}] n={result['n']:4d}  "
+                  f"Q{100 * self.p:.0f}%_hat={result['estimate']:8.2f} {self.unit}  "
+                  f"95% CI=[{result['ci_low']:8.2f}, {result['ci_high']:8.2f}]  "
+                  f"rel_half_width={100 * result['rel_half_width']:.3f}%  "
+                  f"({'CONVERGED' if passed else 'not yet'})")
         return passed
 
 
