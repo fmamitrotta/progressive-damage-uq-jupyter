@@ -18,6 +18,10 @@
 *.stt
 *.mdl
 *.023
+*.cid
+*.simlog
+*.sim
+*.simdir/
 
 # VS Code workspace settings
 .vscode/
