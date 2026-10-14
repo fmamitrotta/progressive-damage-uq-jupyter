@@ -18,33 +18,36 @@ upfront:
   numerical-methods course — there is no way around needing Abaqus itself, and no version of
   this repository will run those notebooks without it.
 - **Binder and Google Colab are not viable for the Abaqus-driving notebooks.** They can only
-  be used for notebooks that are pure Python and operate on already-computed results (later
-  UQ / post-processing notebooks, once those exist). Anything that builds or submits an
-  Abaqus model needs to run somewhere with Abaqus actually installed.
+  be used for notebooks that are pure Python and need no Abaqus run: today that is notebooks
+  04 and 05 (analytical, they compute everything themselves). Notebooks 01, 02, 03 and 06
+  build or submit an Abaqus model, or read back its saved results, so they need to run
+  somewhere with Abaqus actually installed.
 
 ## Requirements
 
 - A working, licensed installation of **Abaqus** (developed and verified against **Abaqus
   2023**; nearby versions are likely to work but haven't been checked).
-- **Python 3.9+** for the notebook-authoring environment (this is separate from, and does not
-  need to match, Abaqus's own bundled Python interpreter).
+- **Python 3.10** for the notebook environment, pinned in `environment.yml` (this is separate
+  from, and does not need to match, Abaqus's own bundled Python interpreter).
 
 ## Setting up the Python environment
 
 ### Option A — Anaconda / conda
 
 ```bash
-conda create -n progressive-damage-uq python=3.10
+conda env create -f environment.yml
 conda activate progressive-damage-uq
-conda install abqpy==2023 numpy matplotlib ipympl ipykernel
 ```
+
+[`environment.yml`](environment.yml) lists the direct dependencies (Python, NumPy, SciPy,
+Matplotlib, `abqpy`, and the Jupyter pieces needed to run a notebook).
 
 ### Option B — plain venv + pip
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # on Windows: .venv\Scripts\activate
-pip install "abqpy==2023.*" numpy matplotlib ipympl ipykernel
+pip install "abqpy==2023.*" numpy scipy matplotlib ipykernel nbconvert
 ```
 
 A few notes on the `abqpy` pin:
@@ -68,11 +71,21 @@ A few notes on the `abqpy` pin:
 
 ```
 .
-├── README.md          — this file
+├── README.md           — this file
+├── LICENSE             — CC BY 4.0 (text, figures) and BSD-3-Clause (code)
+├── environment.yml     — conda environment for the notebooks
 ├── notebooks/          — the course content, added incrementally
-└── scripts/            — standalone Abaqus/Python scripts generated and used by the
-                          notebooks
+├── scripts/            — helper modules imported by the notebooks, and the standalone
+│                         Abaqus scripts they launch through `subprocess`
+└── images/             — figures used in the notebooks
 ```
+
+## License
+
+The text and figures of the notebooks are released under the
+[Creative Commons Attribution 4.0 license](http://creativecommons.org/licenses/by/4.0/)
+(CC BY 4.0). The code, including the code cells of the notebooks and the files in `scripts/`,
+is released under the BSD-3-Clause license. See [`LICENSE`](LICENSE) for both.
 
 ## Author
 
