@@ -1,3 +1,4 @@
+# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario AntonioMitrotta.
 """
 build_open_hole_tension.py
 ---------------------------
@@ -15,7 +16,7 @@ intentionally keeps only short inline notes, not the full explanation.
 
 Do not import this module, and do not run it directly inside a live Jupyter kernel: the
 `from abaqus import *` line below immediately hands the whole script off to a real Abaqus
-installation and terminates the calling process (see CLAUDE.md for why). Run it either
+installation and terminates the calling process (see notebook 01, "Building the model in Abaqus", for why). Run it either
 directly (`python build_open_hole_tension.py [key=value ...]`) or, from a notebook, via
 `subprocess` so only the child process is affected.
 
@@ -66,7 +67,7 @@ import time
 
 # ---------------------------------------------------------------------------------
 # Parameter parsing -- BEFORE the abaqus import, so it runs identically on both of
-# abqpy's self-relaunch passes. See abqpy_notes.md for why this cannot be positional:
+# abqpy's self-relaunch passes. This cannot be positional:
 # Abaqus's noGUI launcher hands back its own full command line, appends anything after its
 # own "--" at the very end, and rewrites any "name=value" it doesn't itself recognize into
 # two separate tokens, "-name" then "value". The scan below handles both shapes.
@@ -223,7 +224,7 @@ material.Elastic(
 )
 material.HashinDamageInitiation(
     table=((X_T, X_C, Y_T, Y_C, S_L, S_T),),  # [MPa]
-    alpha=ALPHA,  # NOTE: the abqpy stub also lists unrelated MSFLD parameters -- see abqpy_notes.md
+    alpha=ALPHA,  # NOTE: the abqpy stub also lists unrelated MSFLD parameters
 )
 material.hashinDamageInitiation.DamageEvolution(
     type=ENERGY,
@@ -231,7 +232,7 @@ material.hashinDamageInitiation.DamageEvolution(
     softening=LINEAR,
 )
 material.hashinDamageInitiation.DamageStabilization(  # missing from the abqpy stub; real
-    fiberTensileCoeff=VISC,  # signature is four Float keywords -- see abqpy_notes.md
+    fiberTensileCoeff=VISC,  # signature is four Float keywords
     fiberCompressiveCoeff=VISC,
     matrixTensileCoeff=VISC,
     matrixCompressiveCoeff=VISC,
@@ -264,7 +265,7 @@ part.SectionAssignment(region=(part.faces,), sectionName="Laminate")
 
 # ---------------------------------------------------------------------------------
 # Mesh the part, THEN instance it (a dependent instance created before its part is meshed
-# never picks up the mesh -- abqpy_notes.md).
+# never picks up the mesh).
 # ---------------------------------------------------------------------------------
 part.setMeshControls(regions=part.faces, elemShape=QUAD, technique=STRUCTURED)
 part.setElementType(
@@ -423,7 +424,7 @@ model.DisplacementBC(name="Applied-Tension", createStepName="Tension", region=as
 
 # ---------------------------------------------------------------------------------
 # Output requests, edited into the keyword block (this install's Model has no output-request
-# API -- abqpy_notes.md). Element output at the MIDDLE section point of each ply only (2, 5,
+# API). Element output at the MIDDLE section point of each ply only (2, 5,
 # ..., 23): the state is pure membrane, so a ply's three section points carry the same value.
 # Node output U only, to view the deformed shape in Abaqus/CAE; the notebook reads none.
 # ---------------------------------------------------------------------------------

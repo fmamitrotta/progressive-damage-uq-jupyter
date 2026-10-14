@@ -1,3 +1,4 @@
+# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario Antonio Mitrotta.
 """
 build_fiber_tension.py
 -----------------------
@@ -8,8 +9,7 @@ See notebooks/01_fiber_tension_single_element.ipynb for the full theoretical bac
 and the citation for every parameter set below -- this script intentionally keeps only
 short inline notes, not the full explanation. See notebooks/02_monte_carlo_fiber_strength.ipynb
 for why X_T is treated as a random variable there, sweeping this same script across many
-sampled values, and notebooks/04_two_parameter_uq_delta_f.ipynb for why G_fT is treated as a
-second, independent random variable there, sweeping both at once.
+sampled values.
 
 This script is independent of both notebooks and accepts its parameters on the command
 line as `key=value` tokens (see "Parameters" below) -- it is never written to disk by a
@@ -17,7 +17,7 @@ notebook cell.
 
 Do not import this module, and do not run it directly inside a live Jupyter kernel: the
 `from abaqus import *` line below immediately hands the whole script off to a real Abaqus
-installation and terminates the calling process (see CLAUDE.md for why). Run it either
+installation and terminates the calling process (see notebook 01, "Building the model in Abaqus", for why). Run it either
 directly (`python build_fiber_tension.py [key=value ...]`) or, from a notebook, via
 `subprocess` so only the child process is affected.
 
@@ -30,8 +30,8 @@ Parameters (all optional, all `key=value` tokens, in any order):
     out=<path>      output JSON path, resolved against the current working directory if
                     relative (default fiber_tension_results.json); any parent directories
                     are created if they don't already exist, so a notebook can point this
-                    straight at its own runs/nb0X/ folder (see CLAUDE.md and each notebook's
-                    own "analysis output" note for the runs/ convention)
+                    straight at its own runs/nb0X/ folder (see notebook 01, "Building the model in Abaqus",
+                    for the runs/ convention)
 
 Example:
     python build_fiber_tension.py nlgeom=OFF X_T=990 U1=3.0 out=../runs/nb01/fiber_tension_results_nlgeom_off.json
@@ -44,12 +44,12 @@ import sys
 
 # ---------------------------------------------------------------------------------
 # Parameter parsing -- BEFORE the abaqus import, so it runs identically on both of
-# abqpy's self-relaunch passes (see the module docstring and CLAUDE.md).
+# abqpy's self-relaunch passes (see the module docstring).
 #
 # Deliberately NOT positional (sys.argv[1], sys.argv[-1], ...): on this install, real
 # Abaqus's noGUI mode does not hand the script a plain [script, *args] argv the way
 # ordinary Python does -- sys.argv here is the FULL underlying ABQcaeK.exe command line.
-# Two things were confirmed live with a probe script (see abqpy_notes.md):
+# Two things were confirmed live with a probe script:
 #   1. Anything passed after Abaqus's own "--" separator is appended at the very END,
 #      not at a fixed index.
 #   2. Abaqus's own launcher re-parses THOSE tokens too, not just its own options:
@@ -121,7 +121,6 @@ material.HashinDamageInitiation(
     # NOTE: abqpy's local type stub for this method also lists several MSFLD-criterion
     # parameters (feq, fnn, frequency, ...) that do not apply to Hashin -- a known
     # documentation-generation bug. Only `table` and `alpha` are real Hashin parameters.
-    # See abqpy_notes.md.
 )
 
 material.hashinDamageInitiation.DamageEvolution(
@@ -139,7 +138,7 @@ part.MaterialOrientation(region=(part.faces,), orientationType=GLOBAL, axis=AXIS
 
 # ---------------------------------------------------------------------------------
 # Mesh the part, THEN instance it: force exactly one S4R element
-# See abqpy_notes.md -- on this install, a dependent instance created before its part
+# On this install, a dependent instance created before its part
 # is meshed does not pick up the mesh afterward, so the part must be meshed first.
 # ---------------------------------------------------------------------------------
 part.seedPart(size=20.0)  # larger than the part -> exactly one element per edge
@@ -195,9 +194,9 @@ model.DisplacementBC(name="Applied-Tension", createStepName="Tension", region=as
 
 # ---------------------------------------------------------------------------------
 # Output requests
-# See abqpy_notes.md -- this Abaqus install's Model object has no FieldOutputRequest/
+# This Abaqus install's Model object has no FieldOutputRequest/
 # HistoryOutputRequest Python API, so the auto-generated default keyword lines are
-# edited directly via keywordBlock instead (a replace, not an insert -- see the notes).
+# edited directly via keywordBlock instead (a replace, not an insert).
 # ---------------------------------------------------------------------------------
 model.keywordBlock.synchVersions(storeNodesAndElements=False)  # regenerate model.keywordBlock.sieBlocks from the current model state
 sie_blocks = model.keywordBlock.sieBlocks  # the full list of raw *KEYWORD lines Abaqus will write to the .inp file
@@ -228,7 +227,7 @@ job.waitForCompletion()  # block until the solver process exits (success or fail
 
 # ---------------------------------------------------------------------------------
 # Extract results to a plain JSON file for the notebook's live kernel to read afterward.
-# See abqpy_notes.md -- the "X10-Edge" node set has TWO nodes (the two corners of the
+# The "X10-Edge" node set has TWO nodes (the two corners of the
 # loaded edge), and Abaqus records history output per node, not per set, so RF1 has to
 # be summed across both nodes to get the total edge reaction force.
 # ---------------------------------------------------------------------------------
@@ -246,7 +245,6 @@ rf1_per_node = [region.historyOutputs["RF1"].data for region in node_regions]  #
 
 # NOTE: `from abaqus import *` shadows the builtin `sum` with an Abaqus-provided symbol
 # of the same name that rejects a generator argument -- accumulate manually instead.
-# See abqpy_notes.md.
 rf1_totals = []
 for i in range(len(u1_history)):  # for each increment ...
     total = 0.0
