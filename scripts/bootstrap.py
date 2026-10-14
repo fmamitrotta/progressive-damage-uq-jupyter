@@ -1,3 +1,4 @@
+# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario Antonio Mitrotta.
 """
 bootstrap.py
 ------------
