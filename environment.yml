@@ -9,3 +9,4 @@ dependencies:
   - ipykernel=7.3
   - nbconvert=7.17
   - abqpy=2023.9
+  - psutil=7.2
