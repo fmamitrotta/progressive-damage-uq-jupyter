@@ -1,4 +1,4 @@
-# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario AntonioMitrotta.
+# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario Antonio Mitrotta.
 """
 build_open_hole_tension.py
 ---------------------------
@@ -47,12 +47,21 @@ Parameters (all optional, all `key=value` tokens, in any order):
                     the values NB6 settles on, and NB6 explains why each differs. A run that
                     hits maxnuminc stops with every frame so far still in the .odb and is
                     extracted normally.
+    cpus=<int>      cores for the solver (default 1), run as threads of one process
+                    (multiprocessingMode=THREADS, set explicitly so Windows and Linux behave
+                    alike), with numDomains set equal to cpus, which this kernel requires even
+                    though the stub documents it for Abaqus/Explicit only. Abaqus refuses more
+                    cores than the machine has.
+    light=1         skip everything a campaign does not read back: the damage field output and
+                    the node displacement output are not requested, and "_mesh.json",
+                    "_damage.csv" and the per-frame histories in the JSON are not written. The
+                    solver path, and so every number that is kept, is unchanged (default 0).
     mesh_only=1     build and mesh the part, write mesh statistics and the mesh itself, and stop
     out=<path>      output JSON path (default oht_results.json). The Abaqus job runs inside the
                     same directory, named after the JSON's stem. Companion files with the same
-                    stem: "_mesh.json" (node coordinates and element connectivity, always
-                    written) and "_damage.csv" (per-element, per-ply damage at the tagged
-                    frames; full runs only).
+                    stem: "_mesh.json" (node coordinates and element connectivity, written
+                    unless light=1) and "_damage.csv" (per-element, per-ply damage at the
+                    tagged frames; full runs only).
 
 Example:
     python build_open_hole_tension.py ncirc=20 nrad=15 out=../runs/nb06/M1.json
@@ -98,6 +107,8 @@ PARAMS = {
     "maxinc": "0.01",
     "mininc": "1e-9",
     "maxnuminc": "5000",
+    "cpus": "1",
+    "light": "0",
     "mesh_only": "0",
     "out": "oht_results.json",
 }
@@ -143,6 +154,8 @@ TARGET_U2 = float(PARAMS["u2"])  # mm
 MININC = float(PARAMS["mininc"])
 MAXINC = float(PARAMS["maxinc"])
 MAXNUMINC = int(PARAMS["maxnuminc"])
+CPUS = int(PARAMS["cpus"])  # solver cores (threads of one process)
+LIGHT = PARAMS["light"].strip() == "1"  # campaign mode: write only what a campaign reads back
 MESH_ONLY = PARAMS["mesh_only"].strip() == "1"
 
 # Resolve the output path to an ABSOLUTE path now, before the os.chdir() further down, so
@@ -160,6 +173,11 @@ from abaqus import *  # triggers the self-relaunch under real Abaqus -- see the 
 from abaqusConstants import *
 import mesh  # mesh.ElemType
 import section  # section.SectionLayer
+
+# Epoch seconds of the script's own start. Taken after the abaqus import, which in abqpy's first
+# pass relaunches the script under Abaqus: the gap between the driver's launch time and this
+# stamp is the CAE start-up cost.
+T_SCRIPT = time.time()
 
 # ---------------------------------------------------------------------------------
 # Geometry: a 76.2 mm square plate with a central 19.05 mm hole (Liu Fig. 1 / Thapa Fig. 3)
@@ -359,16 +377,17 @@ mesh_stats = {
     "frac_elements_over_ceiling": float(n_over) / N_ELEMENTS,
 }
 
-# The mesh itself, for the notebook's mesh and damage-map plots.
-with open(STEM + "_mesh.json", "w") as f:
-    json.dump(
-        {
-            "nodes": [[n.coordinates[0], n.coordinates[1]] for n in instance.nodes],
-            "elements": [list(el.connectivity) for el in instance.elements],
-            "labels": [el.label for el in instance.elements],
-        },
-        f,
-    )
+# The mesh itself, for the notebook's mesh and damage-map plots (a campaign does not plot it).
+if not LIGHT:
+    with open(STEM + "_mesh.json", "w") as f:
+        json.dump(
+            {
+                "nodes": [[n.coordinates[0], n.coordinates[1]] for n in instance.nodes],
+                "elements": [list(el.connectivity) for el in instance.elements],
+                "labels": [el.label for el in instance.elements],
+            },
+            f,
+        )
 
 if MESH_ONLY:
     with open(OUT_NAME, "w") as f:
@@ -431,14 +450,20 @@ model.DisplacementBC(name="Applied-Tension", createStepName="Tension", region=as
 model.keywordBlock.synchVersions(storeNodesAndElements=False)
 sie_blocks = model.keywordBlock.sieBlocks
 field_output_index = next(i for i, line in enumerate(sie_blocks) if line.strip().startswith("*Output, field, variable=PRESELECT"))
+# light=1: the Hashin criteria are all first-ply failure and the first 0-deg failure need; the
+# damage variables (maps, per-ply maxima) and the nodal displacement are not read back.
+element_variables = "HSNFTCRT, HSNFCCRT, HSNMTCRT, HSNMCCRT"
+node_output = ""
+if not LIGHT:
+    element_variables = "DAMAGEFT, DAMAGEFC, DAMAGEMT, DAMAGEMC, " + element_variables
+    node_output = "\n*Node Output\nU"
 model.keywordBlock.replace(
     field_output_index,
     "*Output, field\n"
     "*Element Output\n"
     "2, 5, 8, 11, 14, 17, 20, 23\n"
-    "DAMAGEFT, DAMAGEFC, DAMAGEMT, DAMAGEMC, HSNFTCRT, HSNFCCRT, HSNMTCRT, HSNMCCRT\n"
-    "*Node Output\n"
-    "U",
+    + element_variables
+    + node_output,
 )
 sie_blocks = model.keywordBlock.sieBlocks
 history_output_index = next(i for i, line in enumerate(sie_blocks) if line.strip().startswith("*Output, history, variable=PRESELECT"))
@@ -452,13 +477,20 @@ model.keywordBlock.replace(
 )
 
 # ---------------------------------------------------------------------------------
-# Job: submit and wait (one CPU). chdir into OUT_DIR so every job file lands next to its own
-# JSON.
+# Job: submit and wait. chdir into OUT_DIR so every job file lands next to its own JSON.
+# CPUS cores as threads of one process: made explicit because this install's site default is MPI
+# (its site environment files switch to MPI when Microsoft MPI is installed), and a campaign must
+# behave the same on Windows and Linux. numDomains must
+# equal numCpus: the stub documents it for Abaqus/Explicit only, but this kernel refuses
+# cpus > 1 with the default of 1 domain ("Number of domains must be a multiple of the number of
+# processors"), even in threads mode.
 # ---------------------------------------------------------------------------------
 os.chdir(OUT_DIR)
-job = mdb.Job(name=JOB_NAME, model=MODEL_NAME)
+job = mdb.Job(name=JOB_NAME, model=MODEL_NAME, numCpus=CPUS, numDomains=CPUS, multiprocessingMode=THREADS)
+T_SUBMIT = time.time()  # the model is built; the solver licence is requested from here
 job.submit()
 job.waitForCompletion()  # returns on success AND on failure -- check the .odb, not this
+T_SOLVED = time.time()
 sta_tail = ""
 try:
     with open(JOB_NAME + ".sta") as f:
@@ -548,6 +580,8 @@ for frame in frames:
         crit_max_history[crit_name].append(m)
         if crit_name == "HSNFTCRT":
             crit_ft_0deg_history.append(m0)
+    if LIGHT:
+        continue  # the damage variables were not requested
     for dmg_name in dmg_names:
         dmax = [0.0] * n_plies
         for block in frame.fieldOutputs[dmg_name].bulkDataBlocks:
@@ -615,22 +649,23 @@ if onset0 is not None:
     tagged_frames.append(("onset0", onset0["frame_before"] + 1))
 tagged_frames.append(("peak", peak_index))
 
-with open(STEM + "_damage.csv", "w") as f:
-    f.write("frame_tag,element_label,x,y,ply,damage_ft,damage_fc,damage_mt,damage_mc\n")
-    for tag, frame_index in tagged_frames:
-        frame = frames[frame_index]
-        values_by_dmg = {}
-        for dmg_name in dmg_names:
-            d = {}
-            for fv in frame.fieldOutputs[dmg_name].values:
-                d[(fv.elementLabel, fv.sectionPoint.number)] = fv.data
-            values_by_dmg[dmg_name] = d
-        for key in values_by_dmg["DAMAGEFT"]:
-            ft, fc, mt, mc = [values_by_dmg[n].get(key, 0.0) for n in dmg_names]
-            if ft == 0.0 and fc == 0.0 and mt == 0.0 and mc == 0.0:
-                continue  # undamaged rows are omitted to keep the file small
-            cx, cy = element_centroids[key[0]]
-            f.write("%s,%d,%.4f,%.4f,%d,%.6f,%.6f,%.6f,%.6f\n" % (tag, key[0], cx, cy, ply_of(key[1]), ft, fc, mt, mc))
+if not LIGHT:  # a campaign has no damage field to tabulate
+    with open(STEM + "_damage.csv", "w") as f:
+        f.write("frame_tag,element_label,x,y,ply,damage_ft,damage_fc,damage_mt,damage_mc\n")
+        for tag, frame_index in tagged_frames:
+            frame = frames[frame_index]
+            values_by_dmg = {}
+            for dmg_name in dmg_names:
+                d = {}
+                for fv in frame.fieldOutputs[dmg_name].values:
+                    d[(fv.elementLabel, fv.sectionPoint.number)] = fv.data
+                values_by_dmg[dmg_name] = d
+            for key in values_by_dmg["DAMAGEFT"]:
+                ft, fc, mt, mc = [values_by_dmg[n].get(key, 0.0) for n in dmg_names]
+                if ft == 0.0 and fc == 0.0 and mt == 0.0 and mc == 0.0:
+                    continue  # undamaged rows are omitted to keep the file small
+                cx, cy = element_centroids[key[0]]
+                f.write("%s,%d,%.4f,%.4f,%d,%.6f,%.6f,%.6f,%.6f\n" % (tag, key[0], cx, cy, ply_of(key[1]), ft, fc, mt, mc))
 
 # ---------------------------------------------------------------------------------
 # Main results JSON -- every CLI parameter echoed back, plus everything NB6 reads.
@@ -643,6 +678,8 @@ results.update({
     "g_ft": G_FT, "g_fc": G_FC, "g_mt": G_MT, "g_mc": G_MC,
     "alpha": ALPHA, "visc": VISC, "u2_target": TARGET_U2,
     "mininc": MININC, "maxinc": MAXINC, "maxnuminc": MAXNUMINC,
+    "cpus": CPUS, "light": LIGHT,
+    "t_script": T_SCRIPT, "t_submit": T_SUBMIT, "t_solved": T_SOLVED, "t_extracted": time.time(),  # epoch s
     "completed": completed,
     "n_increments": len(frames) - 1,
     "cpu_seconds": cpu_seconds,
@@ -656,11 +693,14 @@ results.update({
     "sigma_peak_mpa": rf2_totals[peak_index] / GROSS_AREA,
     "fpf": fpf,  # {u2_mm, rf2_n, sigma_mpa, frame_before, mode, ply}, or None
     "onset0": onset0,  # first 0-deg fiber-tension failure, same shape, or None
-    "crit_max_history": crit_max_history,
-    "hsnftcrt_0deg_history": crit_ft_0deg_history,
-    "ply_max_damage": ply_max_damage,  # {DAMAGExx: [frame][ply]}
-    "tagged_frames": dict(tagged_frames),
 })
+if not LIGHT:  # the per-frame histories are what makes a full JSON large
+    results.update({
+        "crit_max_history": crit_max_history,
+        "hsnftcrt_0deg_history": crit_ft_0deg_history,
+        "ply_max_damage": ply_max_damage,  # {DAMAGExx: [frame][ply]}
+        "tagged_frames": dict(tagged_frames),
+    })
 with open(OUT_NAME, "w") as f:
     json.dump(results, f, indent=2)
 
