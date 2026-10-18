@@ -1,4 +1,4 @@
-# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario AntonioMitrotta.
+# Code under BSD-3-Clause (see LICENSE). (c) 2026 Francesco Mario Antonio Mitrotta.
 """
 mc_campaign.py
 --------------
