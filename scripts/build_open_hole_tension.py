@@ -57,6 +57,9 @@ Parameters (all optional, all `key=value` tokens, in any order):
                     "_damage.csv" and the per-frame histories in the JSON are not written. The
                     solver path, and so every number that is kept, is unchanged (default 0).
     mesh_only=1     build and mesh the part, write mesh statistics and the mesh itself, and stop
+    inp_only=1      build the model, write the job's input file (<stem>.inp) and a JSON with the
+                    mesh statistics, every element's Lc, the gross area and the ply angles, and stop
+                    (the template of NB8's campaign, which solves it without CAE)
     out=<path>      output JSON path (default oht_results.json). The Abaqus job runs inside the
                     same directory, named after the JSON's stem. Companion files with the same
                     stem: "_mesh.json" (node coordinates and element connectivity, written
@@ -110,6 +113,7 @@ PARAMS = {
     "cpus": "1",
     "light": "0",
     "mesh_only": "0",
+    "inp_only": "0",
     "out": "oht_results.json",
 }
 argv = sys.argv
@@ -157,6 +161,10 @@ MAXNUMINC = int(PARAMS["maxnuminc"])
 CPUS = int(PARAMS["cpus"])  # solver cores (threads of one process)
 LIGHT = PARAMS["light"].strip() == "1"  # campaign mode: write only what a campaign reads back
 MESH_ONLY = PARAMS["mesh_only"].strip() == "1"
+INP_ONLY = PARAMS["inp_only"].strip() == "1"
+# This script's folder, for importing extract_open_hole_tension.py. Under Abaqus/CAE noGUI the script
+# path is one argv token (possibly "noGUI=<path>"), relative to the launch folder, so resolve it now.
+SCRIPT_DIR = next(os.path.dirname(os.path.abspath(t.split("=")[-1])) for t in argv if t.endswith("build_open_hole_tension.py"))
 
 # Resolve the output path to an ABSOLUTE path now, before the os.chdir() further down, so
 # every named run (JSON, mesh JSON, damage CSV, and the Abaqus job's own files) is
@@ -487,191 +495,9 @@ model.keywordBlock.replace(
 # ---------------------------------------------------------------------------------
 os.chdir(OUT_DIR)
 job = mdb.Job(name=JOB_NAME, model=MODEL_NAME, numCpus=CPUS, numDomains=CPUS, multiprocessingMode=THREADS)
-T_SUBMIT = time.time()  # the model is built; the solver licence is requested from here
-job.submit()
-job.waitForCompletion()  # returns on success AND on failure -- check the .odb, not this
-T_SOLVED = time.time()
-sta_tail = ""
-try:
-    with open(JOB_NAME + ".sta") as f:
-        sta_tail = f.read()[-400:]
-except IOError:
-    pass
-completed = "COMPLETED SUCCESSFULLY" in sta_tail
-
-# Solver cost: the "TOTAL CPU TIME" line of the .dat file's job time summary. CPU time, unlike
-# wall-clock time, is barely affected by other jobs sharing the machine.
-cpu_seconds = None
-try:
-    with open(JOB_NAME + ".dat") as f:
-        for line in f:
-            if "TOTAL CPU TIME" in line:
-                cpu_seconds = float(line.split("=")[1])
-except IOError:
-    pass
-
-# ---------------------------------------------------------------------------------
-# Extraction
-# ---------------------------------------------------------------------------------
-from odbAccess import openOdb
-
-odb = None
-for _attempt in range(6):  # openOdb can race the solver's final flush by a few seconds
-    try:
-        odb = openOdb(JOB_NAME + ".odb")
-        break
-    except Exception:
-        if _attempt == 5:
-            raise
-        time.sleep(5)
-step = odb.steps["Tension"]
-
-# History output is recorded PER NODE on a multi-node set: U2 is identical at every Top-Edge
-# node, RF2 must be summed across all of them.
-top_edge_regions = [region for key, region in step.historyRegions.items() if key.startswith("Node ")]
-u2_history = top_edge_regions[0].historyOutputs["U2"].data
-rf2_per_node = [region.historyOutputs["RF2"].data for region in top_edge_regions]
-rf2_totals = []
-for i in range(len(u2_history)):
-    total = 0.0
-    for node_data in rf2_per_node:
-        total += node_data[i][1]
-    rf2_totals.append(total)
-u2 = [p[1] for p in u2_history]
-
-energy_regions = [region for key, region in step.historyRegions.items() if key.startswith("Assembly ")]
-allcd = [p[1] for p in energy_regions[0].historyOutputs["ALLCD"].data]
-alldmd = [p[1] for p in energy_regions[0].historyOutputs["ALLDMD"].data]
-
 LAMINATE_THICKNESS = 8 * ply_thickness  # mm
 GROSS_AREA = L * LAMINATE_THICKNESS  # mm^2, Liu's gross section (full width x thickness)
-peak_index = max(range(len(rf2_totals)), key=lambda i: rf2_totals[i])
-
-# Per-frame quantities: the model-wide maximum of each Hashin criterion, the maximum fiber-
-# tension criterion in the 0-deg plies, and, per ply, the maximum of each damage variable.
-crit_names = ("HSNFTCRT", "HSNFCCRT", "HSNMTCRT", "HSNMCCRT")
-dmg_names = ("DAMAGEFT", "DAMAGEFC", "DAMAGEMT", "DAMAGEMC")
-mode_names = {"HSNFTCRT": "fiber tension", "HSNFCCRT": "fiber compression", "HSNMTCRT": "matrix tension", "HSNMCCRT": "matrix compression"}
-n_plies = len(physical_angles)
-zero_deg_plies = set(i + 1 for i, a in enumerate(physical_angles) if a == 0.0)  # 1-based
-
-
-def ply_of(sp_number):
-    return (sp_number - 1) // 3 + 1  # 1-based ply; 3 section points per ply
-
-
-# bulkDataBlocks hands back numpy arrays, one block per section point -- orders of magnitude
-# faster than looping over FieldValue objects, which matters for runs with thousands of frames.
-import numpy as np
-
-crit_max_history = dict((name, []) for name in crit_names)
-crit_ft_0deg_history = []
-ply_max_damage = dict((name, []) for name in dmg_names)  # [frame][ply]
-frames = step.frames
-for frame in frames:
-    for crit_name in crit_names:
-        m = 0.0
-        m0 = 0.0
-        for block in frame.fieldOutputs[crit_name].bulkDataBlocks:
-            bmax = float(np.max(block.data))
-            m = max(m, bmax)
-            if crit_name == "HSNFTCRT" and ply_of(block.sectionPoint.number) in zero_deg_plies:
-                m0 = max(m0, bmax)
-        crit_max_history[crit_name].append(m)
-        if crit_name == "HSNFTCRT":
-            crit_ft_0deg_history.append(m0)
-    if LIGHT:
-        continue  # the damage variables were not requested
-    for dmg_name in dmg_names:
-        dmax = [0.0] * n_plies
-        for block in frame.fieldOutputs[dmg_name].bulkDataBlocks:
-            p = ply_of(block.sectionPoint.number) - 1
-            dmax[p] = max(dmax[p], float(np.max(block.data)))
-        ply_max_damage[dmg_name].append(dmax)
-
-
-# ---------------------------------------------------------------------------------
-# Event extraction. A Hashin criterion output stays at exactly 1.0 from the first frame after
-# its mode initiates, so the frame after a crossing says only "it happened somewhere since the
-# previous frame". Instead, extrapolate forward from frame(s) strictly BEFORE the crossing:
-#   - quadratic=True (first-ply failure): before any damage the model is linear elastic, so
-#     every stress scales with U2 and every (quadratic) Hashin criterion with U2^2. One frame
-#     then gives the crossing exactly: U2* = U2_prev / sqrt(F_prev), RF2* = RF2_prev * U2*/U2_prev.
-#   - quadratic=False (first 0-deg fiber-tension failure, after matrix cracking has made the
-#     response nonlinear): straight line through sqrt(F) at the two frames before the
-#     crossing, clamped inside the bracketing increment; RF2 interpolated linearly in U2.
-# ---------------------------------------------------------------------------------
-def extrapolate_event(u2_list, rf2_list, crit_history, quadratic, threshold=1.0):
-    for i in range(1, len(crit_history)):
-        if crit_history[i - 1] < threshold <= crit_history[i]:
-            if quadratic:
-                c0 = crit_history[i - 1]
-                if c0 <= 0.0:
-                    return None  # crossed within the first increment: no elastic frame to scale from
-                u2_star = u2_list[i - 1] / math.sqrt(c0)
-                rf2_star = rf2_list[i - 1] * (u2_star / u2_list[i - 1])
-            elif i >= 2 and crit_history[i - 2] < crit_history[i - 1]:
-                s0, s1 = math.sqrt(crit_history[i - 2]), math.sqrt(crit_history[i - 1])
-                u0, u1 = u2_list[i - 2], u2_list[i - 1]
-                slope = (s1 - s0) / (u1 - u0)
-                u2_star = min(max(u1 + (1.0 - s1) / slope, u1), u2_list[i])
-                frac = (u2_star - u1) / (u2_list[i] - u1) if u2_list[i] != u1 else 0.0
-                rf2_star = rf2_list[i - 1] + frac * (rf2_list[i] - rf2_list[i - 1])
-            else:
-                u2_star, rf2_star = u2_list[i - 1], rf2_list[i - 1]
-            return {"u2_mm": u2_star, "rf2_n": rf2_star, "sigma_mpa": rf2_star / GROSS_AREA, "frame_before": i - 1}
-    return None
-
-
-overall_crit_history = [max(crit_max_history[name][i] for name in crit_names) for i in range(len(frames))]
-fpf = extrapolate_event(u2, rf2_totals, overall_crit_history, quadratic=True)
-onset0 = extrapolate_event(u2, rf2_totals, crit_ft_0deg_history, quadratic=False)
-
-if fpf is not None:  # which mode and ply drove first-ply failure
-    frame = frames[fpf["frame_before"] + 1]
-    for crit_name in crit_names:
-        for fv in frame.fieldOutputs[crit_name].values:
-            if fv.data >= 1.0:
-                fpf["mode"] = mode_names[crit_name]
-                fpf["ply"] = ply_of(fv.sectionPoint.number)
-                break
-        if "mode" in fpf:
-            break
-
-# ---------------------------------------------------------------------------------
-# Companion damage CSV at tagged frames: the first frame after first-ply failure, the first
-# frame after the first 0-deg fiber-tension failure, and the peak-load frame.
-# ---------------------------------------------------------------------------------
-tagged_frames = []
-if fpf is not None:
-    tagged_frames.append(("fpf", fpf["frame_before"] + 1))
-if onset0 is not None:
-    tagged_frames.append(("onset0", onset0["frame_before"] + 1))
-tagged_frames.append(("peak", peak_index))
-
-if not LIGHT:  # a campaign has no damage field to tabulate
-    with open(STEM + "_damage.csv", "w") as f:
-        f.write("frame_tag,element_label,x,y,ply,damage_ft,damage_fc,damage_mt,damage_mc\n")
-        for tag, frame_index in tagged_frames:
-            frame = frames[frame_index]
-            values_by_dmg = {}
-            for dmg_name in dmg_names:
-                d = {}
-                for fv in frame.fieldOutputs[dmg_name].values:
-                    d[(fv.elementLabel, fv.sectionPoint.number)] = fv.data
-                values_by_dmg[dmg_name] = d
-            for key in values_by_dmg["DAMAGEFT"]:
-                ft, fc, mt, mc = [values_by_dmg[n].get(key, 0.0) for n in dmg_names]
-                if ft == 0.0 and fc == 0.0 and mt == 0.0 and mc == 0.0:
-                    continue  # undamaged rows are omitted to keep the file small
-                cx, cy = element_centroids[key[0]]
-                f.write("%s,%d,%.4f,%.4f,%d,%.6f,%.6f,%.6f,%.6f\n" % (tag, key[0], cx, cy, ply_of(key[1]), ft, fc, mt, mc))
-
-# ---------------------------------------------------------------------------------
-# Main results JSON -- every CLI parameter echoed back, plus everything NB6 reads.
-# ---------------------------------------------------------------------------------
-results = dict(mesh_stats)
-results.update({
+PARAMS_ECHO = {
     "run": _stem,
     "e1": E1, "e2": E2, "nu12": NU12, "g12": G12, "g13": G13, "g23": G23, "t_ply": T_PLY,
     "x_t": X_T, "x_c": X_C, "y_t": Y_T, "y_c": Y_C, "s_l": S_L, "s_t": S_T,
@@ -679,29 +505,41 @@ results.update({
     "alpha": ALPHA, "visc": VISC, "u2_target": TARGET_U2,
     "mininc": MININC, "maxinc": MAXINC, "maxnuminc": MAXNUMINC,
     "cpus": CPUS, "light": LIGHT,
-    "t_script": T_SCRIPT, "t_submit": T_SUBMIT, "t_solved": T_SOLVED, "t_extracted": time.time(),  # epoch s
-    "completed": completed,
-    "n_increments": len(frames) - 1,
-    "cpu_seconds": cpu_seconds,
-    "u2": u2,
-    "rf2": rf2_totals,
-    "allcd": allcd, "alldmd": alldmd,
-    "gross_area_mm2": GROSS_AREA,
-    "peak_index": peak_index,
-    "f_peak_n": rf2_totals[peak_index],
-    "u2_peak_mm": u2[peak_index],
-    "sigma_peak_mpa": rf2_totals[peak_index] / GROSS_AREA,
-    "fpf": fpf,  # {u2_mm, rf2_n, sigma_mpa, frame_before, mode, ply}, or None
-    "onset0": onset0,  # first 0-deg fiber-tension failure, same shape, or None
-})
-if not LIGHT:  # the per-frame histories are what makes a full JSON large
-    results.update({
-        "crit_max_history": crit_max_history,
-        "hsnftcrt_0deg_history": crit_ft_0deg_history,
-        "ply_max_damage": ply_max_damage,  # {DAMAGExx: [frame][ply]}
-        "tagged_frames": dict(tagged_frames),
-    })
+}
+
+# inp_only=1: write the input file (<job>.inp, next to the JSON) and stop. A campaign patches its
+# material data lines per sample and solves it without CAE (oht_campaign.py, NB8); the JSON carries
+# what that needs: every element's Lc for the sample's own ceiling, the gross area and the ply angles.
+if INP_ONLY:
+    job.writeInput(consistencyChecking=OFF)
+    meta = dict(mesh_stats)
+    meta.update(PARAMS_ECHO)
+    meta.update({"lc_values": lc_values, "gross_area_mm2": GROSS_AREA, "physical_angles": physical_angles})
+    with open(OUT_NAME, "w") as f:
+        json.dump(meta, f, indent=2)
+    sys.exit(0)
+
+T_SUBMIT = time.time()  # the model is built; the solver licence is requested from here
+job.submit()
+job.waitForCompletion()  # returns on success AND on failure -- check the .odb, not this
+T_SOLVED = time.time()
+
+# ---------------------------------------------------------------------------------
+# Extraction: extract_open_hole_tension.py, shared with campaigns that solve without CAE.
+# ---------------------------------------------------------------------------------
+sys.path.insert(0, SCRIPT_DIR)
+from extract_open_hole_tension import extract
+
+extracted = extract(JOB_NAME, LIGHT, GROSS_AREA, physical_angles, element_centroids,
+                    None if LIGHT else STEM + "_damage.csv")
+
+# ---------------------------------------------------------------------------------
+# Main results JSON -- every CLI parameter echoed back, plus everything NB6 reads.
+# ---------------------------------------------------------------------------------
+results = dict(mesh_stats)
+results.update(PARAMS_ECHO)
+results.update({"t_script": T_SCRIPT, "t_submit": T_SUBMIT, "t_solved": T_SOLVED})  # epoch s
+results.update(extracted)
+results["t_extracted"] = time.time()
 with open(OUT_NAME, "w") as f:
     json.dump(results, f, indent=2)
-
-odb.close()
