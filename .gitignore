@@ -60,6 +60,7 @@ runs/
 
 # Python bytecode cache directories and notebook checkpoints
 scripts/__pycache__/
+*.pyc
 __pycache__/
 .ipynb_checkpoints/
 
