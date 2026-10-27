@@ -13,20 +13,34 @@ composites (Hashin failure criteria with energy-based damage evolution), automat
 Python rather than the Abaqus/CAE GUI. Two things follow from that which are worth stating
 upfront:
 
-- **A licensed local Abaqus installation is required** for any notebook that actually builds
-  or solves a finite element model. This is different from a fully self-contained
-  numerical-methods course — there is no way around needing Abaqus itself, and no version of
-  this repository will run those notebooks without it.
-- **Binder and Google Colab are not viable for the Abaqus-driving notebooks.** They can only
-  be used for notebooks that are pure Python and need no Abaqus run: today that is notebooks
-  04, 05 and 07 (they compute everything themselves). Notebooks 01, 02, 03, 06 and 08
-  build or submit an Abaqus model, or read back its saved results, so they need to run
-  somewhere with Abaqus actually installed.
+- **Running the analyses yourself needs a licensed local Abaqus installation.** This is
+  different from a fully self-contained numerical-methods course: the notebooks that build or
+  solve a finite element model call Abaqus itself.
+- **Binder and Google Colab only work for the notebooks that need no Abaqus results at all:**
+  today that is notebooks 04, 05 and 07 (they compute everything themselves). Notebooks 01,
+  02, 03, 06 and 08 use Abaqus results, so they need either Abaqus or the result files (next
+  section).
+
+## Reading or running the notebooks
+
+- **Reading:** every notebook is saved with its outputs, so you can read it on GitHub with
+  nothing installed.
+- **Running:** set up the Python environment below. Notebooks 01, 02, 03, 06 and 08 work by
+  *run or load*: Abaqus runs an analysis only if its result file under `runs/nbNN/` is
+  missing, and otherwise loads the file. To run them you need **either**
+  - a licensed **Abaqus** installation, to run the analyses yourself (notebooks 06 and 08 take
+    hours and need many licence tokens), **or**
+  - the **result files**. The `runs/` folder is not part of this repository (about 180 MB of
+    JSON and CSV files). While the series is in development, email me at
+    fma.mitrotta@bristol.ac.uk with the notebooks you want to run, and put the folders I send
+    you in `runs/` at the repository root (`runs/nb01/`, `runs/nb02/`, ...). Notebook 03 also
+    reads the results of notebook 02.
 
 ## Requirements
 
-- A working, licensed installation of **Abaqus** (developed and verified against **Abaqus
-  2023**; nearby versions are likely to work but haven't been checked).
+- **Abaqus**, only if you want to run the analyses yourself rather than load result files
+  (developed and verified against **Abaqus 2023**; nearby versions are likely to work but
+  haven't been checked).
 - **Python 3.10** for the notebook environment, pinned in `environment.yml` (this is separate
   from, and does not need to match, Abaqus's own bundled Python interpreter).
 
@@ -77,7 +91,8 @@ A few notes on the `abqpy` pin:
 ├── notebooks/          — the course content, added incrementally
 ├── scripts/            — helper modules imported by the notebooks, and the standalone
 │                         Abaqus scripts they launch through `subprocess`
-└── images/             — figures used in the notebooks
+├── images/             — figures used in the notebooks
+└── runs/               — saved analysis results; not in the repository (see above)
 ```
 
 ## License
