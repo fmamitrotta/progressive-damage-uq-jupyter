@@ -19,7 +19,7 @@ upfront:
   this repository will run those notebooks without it.
 - **Binder and Google Colab are not viable for the Abaqus-driving notebooks.** They can only
   be used for notebooks that are pure Python and need no Abaqus run: today that is notebooks
-  04 and 05 (analytical, they compute everything themselves). Notebooks 01, 02, 03 and 06
+  04, 05 and 07 (they compute everything themselves). Notebooks 01, 02, 03, 06 and 08
   build or submit an Abaqus model, or read back its saved results, so they need to run
   somewhere with Abaqus actually installed.
 
