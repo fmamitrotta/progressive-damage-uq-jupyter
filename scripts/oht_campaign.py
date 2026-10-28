@@ -72,6 +72,9 @@ PEAK_RAM_GB = 0.65  # largest process-tree memory of one M1 job (NB8, with CAE i
 # A job checks out its tokens about 6-9 s after launch (NB8's job logs), so the licence server does not see it
 # at once: a job launched less than this many seconds ago counts as already holding its tokens.
 CHECKOUT_S = 30.0
+# A load drop is brittle if the load loses 20% within this share of the peak displacement (NB8, Part 4: every
+# run falls that far within 0.17 of it, 99% within 0.033).
+BRITTLE_DU = 0.1
 STATUS_FIELDS = ["sample", "accepted", "reason", "wall_s", "cpu_s", "peak_ram_mb", "tokens"]
 
 
@@ -82,24 +85,45 @@ def parse_rows(text):
     return list(range(int(a), int(b or a) + 1))
 
 
+def drop_displacement(r):
+    """Delta U_20 [mm]: displacement past the peak at which the load first falls below 80% of the peak.
+
+    None if the load never falls that far (the job stopped before the drop).
+    """
+    # The load and displacement histories, and the frame of the peak.
+    rf2, u2, peak = r.get("rf2") or [], r.get("u2") or [], r.get("peak_index")
+    if peak is None:
+        return None
+    # The first frame after the peak below 80% of it, measured from the peak's displacement.
+    for i in range(peak + 1, len(rf2)):
+        if rf2[i] < 0.8 * rf2[peak]:
+            return u2[i] - u2[peak]
+    return None
+
+
 def acceptance_reason(r):
     """Return '' if a sample's result is usable, else why it is rejected.
 
     Three tests (NB8, Part 4): first-ply failure was found; the load falls by at least 20% after the
     peak (so the peak is not just the last recorded frame); and the viscous energy at the peak is
-    below 1% of the damage energy (NB6's check on the viscosity). A job that stopped before the
-    target displacement passes if it stopped after such a drop: the outputs end at the peak.
+    below 1% of the damage energy (NB6's check on the viscosity), or, if it is not, the load drop is
+    still brittle: it falls by 20% within BRITTLE_DU times the peak displacement. A job that stopped
+    before the target displacement passes if it stopped after such a drop: the outputs end at the peak.
     """
     # Test 1: the extraction found the first point where a Hashin criterion reaches 1.
     if r.get("fpf") is None:
         return "no first-ply failure found"
-    # Test 2: the peak has later frames, and the lowest load among them is below 80% of the peak.
-    rf2, peak = r.get("rf2") or [], r.get("peak_index")
-    if peak is None or peak >= len(rf2) - 1 or min(rf2[peak:]) >= 0.8 * rf2[peak]:
+    # Test 2: the load falls below 80% of the peak at some later frame.
+    du = drop_displacement(r)
+    if du is None:
         return "no clear load drop after the peak"
-    # Test 3: viscous energy ALLCD below 1% of the damage energy ALLDMD at the peak frame.
-    if r["alldmd"][peak] <= 0.0 or r["allcd"][peak] / r["alldmd"][peak] >= 0.01:
-        return "ALLCD/ALLDMD at the peak is not below 1%"
+    # Test 3: viscous energy ALLCD below 1% of the damage energy ALLDMD at the peak frame, or a brittle drop
+    # (too much viscosity would smooth the drop out, NB6).
+    peak = r["peak_index"]
+    if r["alldmd"][peak] <= 0.0:
+        return "no damage energy at the peak"
+    if r["allcd"][peak] / r["alldmd"][peak] >= 0.01 and du >= BRITTLE_DU * r["u2_peak_mm"]:
+        return "ALLCD/ALLDMD at the peak is 1% or more and the load drop is gradual"
     return ""
 
 
@@ -416,7 +440,8 @@ def selftest():
     """Checks the pure functions on made-up data; needs neither Abaqus nor a design file."""
     assert parse_rows("32-32") == [32] and parse_rows("2-4") == [2, 3, 4] and parse_rows("5") == [5]
     good = {"completed": True, "fpf": {"u2_mm": 0.2}, "rf2": [0, 10, 30, 12, 5], "peak_index": 2,
-            "allcd": [0, 0, 0.001, 0, 0], "alldmd": [0, 0, 1.0, 0, 0]}
+            "u2": [0, 0.3, 0.6, 0.61, 0.7], "u2_peak_mm": 0.6, "allcd": [0, 0, 0.001, 0, 0], "alldmd": [0, 0, 1.0, 0, 0]}
+    assert abs(drop_displacement(good) - 0.01) < 1e-12 and drop_displacement(dict(good, rf2=[0, 10, 30, 29, 28])) is None
     assert acceptance_reason(good) == ""
     assert acceptance_reason(dict(good, completed=False)) == ""  # stopped early, but after a clear drop
     assert "load drop" in acceptance_reason(dict(good, rf2=[0, 10, 30, 25, 24]))  # a drop of only 20%
@@ -424,7 +449,10 @@ def selftest():
     assert "first-ply" in acceptance_reason(dict(good, fpf=None))
     assert "load drop" in acceptance_reason(dict(good, rf2=[0, 10, 30, 29, 28]))  # no clear drop
     assert "load drop" in acceptance_reason(dict(good, rf2=[0, 10, 30], allcd=[0] * 3, alldmd=[1] * 3))  # peak last
-    assert "1%" in acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0]))
+    # 5% viscous energy: kept if the 20% drop comes within 0.1 x 0.6 mm past the peak, rejected if later.
+    assert acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0])) == ""
+    assert "gradual" in acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0], u2=[0, 0.3, 0.6, 0.7, 0.8]))
+    assert "gradual" not in acceptance_reason(dict(good, u2=[0, 0.3, 0.6, 0.7, 0.8]))  # gradual, but ratio below 1%
     assert parse_log("Abaqus JOB x\nAbaqus 2023\nAbaqus/Standard checked out 50 tokens from DSLS") == ("2023", 50)
     assert parse_log("nothing here") == (None, None)
     # dslsstat: two pools per feature are summed; other features and non-token rows are ignored.
