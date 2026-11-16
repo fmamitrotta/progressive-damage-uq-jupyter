@@ -20,6 +20,7 @@ Nothing in this module touches Abaqus, and nothing in it imports `abaqus` or `od
 unlike `build_fiber_tension.py` it is safe to import directly into a live Jupyter kernel.
 """
 import numpy as np
+from scipy.stats import bootstrap
 
 __all__ = ["bootstrap_ci", "ConvergenceChecker", "min_samples_for_quantile_ci"]
 
@@ -35,18 +36,17 @@ def bootstrap_ci(x, statfunc, n_boot=1000, rng=None):
     this one function is what every convergence check calls).
     '''
     x = np.asarray(x, dtype=float)
-    n = len(x)
     estimate = float(statfunc(x, axis=0))
-    if rng is None:
-        rng = np.random.default_rng()
-    idx = rng.integers(0, n, size=(n_boot, n))     # WITH replacement, see NB3 Part 1
-    replicates = statfunc(x[idx], axis=1)          # one replicate per resample, all n_boot rows at once
-    ci_lo, ci_hi = np.percentile(replicates, [2.5, 97.5])
+    # SciPy does the resampling WITH replacement (see NB3 Part 1) and takes the 2.5th and 97.5th
+    # percentiles of the replicates. With the same generator it draws exactly the resamples that
+    # NB3 Part 1 draws by hand, so the two give identical numbers (NB3 checks this).
+    res = bootstrap((x,), statfunc, n_resamples=n_boot, method="percentile", rng=rng)
+    ci_lo, ci_hi = res.confidence_interval
     half_width = 0.5 * (ci_hi - ci_lo)
     return {
-        "n": n, "estimate": estimate, "ci_low": float(ci_lo), "ci_high": float(ci_hi),
+        "n": len(x), "estimate": estimate, "ci_low": float(ci_lo), "ci_high": float(ci_hi),
         "half_width": float(half_width), "rel_half_width": float(half_width / abs(estimate)),
-        "replicates": replicates,
+        "replicates": res.bootstrap_distribution,
     }
 
 
