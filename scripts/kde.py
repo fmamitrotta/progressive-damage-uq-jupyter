@@ -2,17 +2,18 @@
 """
 kde.py
 ------
-Kernel density estimation: NB2 Part 5's own functions, unchanged, imported here rather than
+Kernel density estimation: NB2 Part 6's own functions, unchanged, imported here rather than
 redefined -- silverman_bandwidth, kde_loo_log_likelihood, kde_loo_bandwidth (bandwidth selection
-by leave-one-out cross-validation), kde_pdf, kde_cdf, and kde_percentile (bisecting the KDE's
-own closed-form CDF). NB2 derives and explains every one of these in full; nothing here is new
+by leave-one-out cross-validation), kde_pdf, kde_cdf, and kde_percentile (the root of the KDE's
+own closed-form CDF, by SciPy's brentq). NB2 derives and explains every one of these in full; nothing here is new
 to any notebook after NB2, which is why this module is imported rather than walked through again.
 
 Nothing in this module touches Abaqus, and nothing in it imports `abaqus` or `odbAccess`, so
 unlike `build_fiber_tension.py` it is safe to import directly into a live Jupyter kernel.
 """
 import numpy as np
-from scipy.stats import norm
+from scipy.optimize import brentq
+from scipy.stats import gaussian_kde, norm
 
 
 def silverman_bandwidth(x):
@@ -51,12 +52,10 @@ def kde_loo_bandwidth(x, n_grid=40, lo_factor=0.3, hi_factor=2.5):
 
 
 def kde_pdf(x_eval, samples, h):
-    """Gaussian KDE evaluated at x_eval: put a Gaussian "bump" of width h on top of every
-    sample point and average them. Smooth everywhere, unlike a histogram."""
-    x_eval = np.atleast_1d(np.asarray(x_eval, dtype=float))
-    samples = np.asarray(samples, dtype=float)
-    z = (x_eval[:, None] - samples[None, :]) / h  # every (evaluation point, sample) pairwise distance, rescaled by h
-    return np.exp(-0.5 * z ** 2).sum(axis=1) / (len(samples) * h * np.sqrt(2.0 * np.pi))  # sum of kernels, normalized by N*h
+    """Gaussian KDE evaluated at x_eval, from SciPy: a Gaussian "bump" of width h on every
+    sample, averaged. SciPy's bw_method is the bandwidth in units of the sample std, hence h / s."""
+    s = np.std(samples, ddof=1)                               # sample std, the unit of SciPy's bandwidth
+    return gaussian_kde(samples, bw_method=h / s)(x_eval)    # build f_hat with width h, evaluate at x_eval
 
 
 def kde_cdf(x_eval, samples, h):
@@ -67,26 +66,8 @@ def kde_cdf(x_eval, samples, h):
     return norm.cdf((x_eval[:, None] - samples[None, :]) / h).mean(axis=1)
 
 
-def kde_percentile(samples, h, p=0.05, tol=0.01):
-    """The p-th percentile of the KDE, found by bisecting its closed-form CDF.
-
-    The bisection bracket starts BRACKET_SIGMAS bandwidths outside the sample range on each
-    side. A Gaussian kernel's tail is already below 1e-9 of its peak six standard deviations
-    out, so starting the bracket that far beyond the data guarantees F_hat is essentially 0 at
-    the low end and essentially 1 at the high end -- i.e. that the true root really does lie
-    inside the starting bracket, for any percentile this notebook would ever ask for.
-
-    The loop halves the bracket every iteration and stops once its width is below `tol`
-    (newtons) -- narrow enough that the result is exact to well under a tenth of a percent of
-    F_peak's own scale, several orders tighter than anything else this notebook estimates to.
-    """
-    samples = np.asarray(samples, dtype=float)
-    BRACKET_SIGMAS = 6.0  # see docstring: far enough that the Gaussian tail there is negligible
-    lo, hi = samples.min() - BRACKET_SIGMAS * h, samples.max() + BRACKET_SIGMAS * h
-    while hi - lo > tol:
-        mid = 0.5 * (lo + hi)
-        if float(kde_cdf(mid, samples, h)[0]) < p:
-            lo = mid  # F_hat(mid) is still below the target level -> the root is above mid
-        else:
-            hi = mid  # F_hat(mid) has already reached the target level -> the root is at or below mid
-    return float(0.5 * (lo + hi))
+def kde_percentile(samples, h, p=0.05):
+    """The p-th percentile of the KDE: the root of F_hat(x) - p. The bracket starts six bandwidths
+    outside the sample range, where F_hat is essentially 0 (left) and 1 (right), so it holds the root."""
+    lo, hi = np.min(samples) - 6 * h, np.max(samples) + 6 * h        # F_hat - p < 0 at lo, > 0 at hi
+    return brentq(lambda x: kde_cdf(x, samples, h)[0] - p, lo, hi)

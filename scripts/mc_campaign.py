@@ -2,11 +2,11 @@
 """
 mc_campaign.py
 --------------
-NB2 Part 4's own campaign machinery -- run_one_sample, load_campaign, run_campaign -- unchanged
+NB2 Part 5's own campaign machinery -- run_one_sample, load_campaign, run_campaign -- unchanged
 apart from one addition every notebook after NB2 needs: an `nlgeom` argument, since NB2's own
 inline version only ever ran nlgeom=OFF. Imported here rather than redefined, exactly like
 `kde.py`'s KDE functions: nothing below is new to any notebook after NB2, which already defined
-and explained every one of these pieces in full (NB2 Part 4, "Launching one Abaqus run" through
+and explained every one of these pieces in full (NB2 Part 5, "Launching one Abaqus run" through
 "Running (and resuming) the whole campaign").
 
 Because it never does `from abaqus import *`, this module is safe to import directly into a
@@ -34,11 +34,12 @@ FIELDNAMES = ["sample_index", "x_t_mpa", "f_peak_raw_n", "u1_peak_raw_mm",
               "f_peak_recon_n", "u1_peak_recon_mm", "hsnftcrt_max", "hsnftcrt_ok", "run_seconds"]
 
 
-def run_one_sample(x_t, run_json, target_u1, nlgeom="OFF"):
+def run_one_sample(x_t, run_json, target_u1, nlgeom="OFF", **extra):
     """Run build_fiber_tension.py once for the given X_T (and nlgeom setting), and save its full
     recorded force-displacement/damage history straight to run_json. build_fiber_tension.py's
     own `out=` parameter creates run_json's parent folder automatically if it doesn't exist yet,
-    so there is no separate directory setup here.
+    so there is no separate directory setup here. Any other script parameter (NB7: G_fT, size,
+    E1, maxinc) is passed through `extra` as a key=value token.
 
     If run_json already exists, the Abaqus call is skipped entirely and the saved history is
     read back instead -- this single file-existence check is what makes ONE run resumable.
@@ -53,7 +54,8 @@ def run_one_sample(x_t, run_json, target_u1, nlgeom="OFF"):
     t0 = time.perf_counter()
     result = subprocess.run(
         [sys.executable, "build_fiber_tension.py", f"nlgeom={nlgeom}", f"X_T={x_t:.6f}",
-         f"U1={target_u1}", f"out={run_json.as_posix()}"],
+         f"U1={target_u1}", f"out={run_json.as_posix()}"]
+        + [f"{key}={value}" for key, value in extra.items()],
         cwd=str(SCRIPTS_DIR),
         capture_output=True,
         text=True,
