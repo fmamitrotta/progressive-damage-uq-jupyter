@@ -3,7 +3,8 @@
 build_fiber_tension.py
 -----------------------
 Builds, solves, and extracts results for a single-element verification test of Abaqus's
-built-in Hashin progressive damage model, loaded in pure fiber-direction tension.
+built-in progressive damage model for fiber-reinforced composites (Hashin initiation, energy-based
+evolution), loaded in pure fiber-direction tension.
 
 See notebooks/01_fiber_tension_single_element.ipynb for the full theoretical background
 and the citation for every parameter set below -- this script intentionally keeps only
@@ -32,6 +33,12 @@ Parameters (all optional, all `key=value` tokens, in any order):
                     are created if they don't already exist, so a notebook can point this
                     straight at its own runs/nb0X/ folder (see notebook 01, "Building the model in Abaqus",
                     for the runs/ convention)
+    size=<float>    edge of the square element, mm (default 10.0); notebook 07 grows it past the
+                    element-size ceiling
+    E1=<float>      fiber-direction modulus, MPa (default 40600.0)
+    maxinc=<float>  cap on the increment, as a fraction of the step (default: none, keeping
+                    the step of notebooks 01-03). When given, the first increment equals the
+                    cap, the smallest allowed is 1e-9 and up to 5000 increments are allowed
 
 Example:
     python build_fiber_tension.py nlgeom=OFF X_T=990 U1=3.0 out=../runs/nb01/fiber_tension_results_nlgeom_off.json
@@ -65,7 +72,8 @@ import sys
 # second pass). None of Abaqus's own injected option names collide with ours, so
 # unrelated tokens (-lmlog, -tmpdir, ...) are silently skipped either way.
 # ---------------------------------------------------------------------------------
-PARAMS = {"nlgeom": "ON", "x_t": "990.0", "g_ft": "1290.0", "u1": "3.0", "out": "fiber_tension_results.json"}
+PARAMS = {"nlgeom": "ON", "x_t": "990.0", "g_ft": "1290.0", "u1": "3.0", "out": "fiber_tension_results.json",
+          "size": "10.0", "e1": "40600.0", "maxinc": ""}
 argv = sys.argv
 i = 0
 while i < len(argv):
@@ -88,6 +96,9 @@ X_T = float(PARAMS["x_t"])  # MPa
 G_FT = float(PARAMS["g_ft"])  # N/mm, fiber-tension fracture energy
 TARGET_U1 = float(PARAMS["u1"])  # mm
 OUT_NAME = PARAMS["out"]
+EL_SIZE = float(PARAMS["size"])  # mm, element edge (not SIZE: `from abaqusConstants import *` exports a constant SIZE)
+E1 = float(PARAMS["e1"])  # MPa, fiber-direction modulus
+MAX_INC = float(PARAMS["maxinc"]) if PARAMS["maxinc"] else None  # increment cap, fraction of the step (None = no cap)
 
 from abaqus import *  # triggers the self-relaunch under real Abaqus -- see the module docstring
 from abaqusConstants import *  # symbolic constants used throughout (ON, OFF, LAMINA, S4R, ...)
@@ -100,7 +111,7 @@ mdb.Model(name="FiberTension")  # create a new, empty model database entry named
 model = mdb.models["FiberTension"]  # keep a handle to it for everything that follows
 
 sketch = model.ConstrainedSketch(name="ply_profile", sheetSize=20.0)  # a 2D sketch, canvas 20 mm across
-sketch.rectangle(point1=(0.0, 0.0), point2=(10.0, 10.0))  # draw the 10x10 mm square profile
+sketch.rectangle(point1=(0.0, 0.0), point2=(EL_SIZE, EL_SIZE))  # draw the square profile (10x10 mm by default)
 
 part = model.Part(name="Ply", dimensionality=THREE_D, type=DEFORMABLE_BODY)  # an empty deformable part
 part.BaseShell(sketch=sketch)  # extrude the sketch into a shell (no thickness yet -- that comes from the section below)
@@ -111,7 +122,7 @@ part.BaseShell(sketch=sketch)  # extrude the sketch into a shell (no thickness y
 material = model.Material(name="GlassEpoxy_UD")  # create the material definition; every property below attaches to it
 
 material.Elastic(
-    table=((40600.0, 16300.0, 0.27, 16800.0, 16800.0, 6000.0),),  # E1, E2, nu12, G12, G13, G23 [MPa]
+    table=((E1, 16300.0, 0.27, 16800.0, 16800.0, 6000.0),),  # E1, E2, nu12, G12, G13, G23 [MPa] -- E1 is the CLI parameter above
     type=LAMINA,  # orthotropic engineering-constants form (as opposed to, e.g., isotropic or full anisotropic)
 )
 
@@ -141,7 +152,7 @@ part.MaterialOrientation(region=(part.faces,), orientationType=GLOBAL, axis=AXIS
 # On this install, a dependent instance created before its part
 # is meshed does not pick up the mesh afterward, so the part must be meshed first.
 # ---------------------------------------------------------------------------------
-part.seedPart(size=20.0)  # larger than the part -> exactly one element per edge
+part.seedPart(size=2 * EL_SIZE)  # larger than the part -> exactly one element per edge
 part.setElementType(
     regions=(part.faces,),
     elemTypes=(mesh.ElemType(elemCode=S4R, elemLibrary=STANDARD),),  # 4-node reduced-integration shell -- see NB1 for what "reduced integration" means
@@ -158,7 +169,7 @@ tol = 1e-3  # mm; tolerance for the bounding-box node searches below
 big = 1e6  # mm; a bound far outside the model, used to make a bounding box effectively unbounded in one direction
 nodes = instance.nodes
 x0_nodes = nodes.getByBoundingBox(xMin=-tol, xMax=tol, yMin=-big, yMax=big, zMin=-big, zMax=big)  # the two nodes on the x=0 edge (fixed edge)
-x10_nodes = nodes.getByBoundingBox(xMin=10 - tol, xMax=10 + tol, yMin=-big, yMax=big, zMin=-big, zMax=big)  # the two nodes on the x=10 edge (loaded edge)
+x10_nodes = nodes.getByBoundingBox(xMin=EL_SIZE - tol, xMax=EL_SIZE + tol, yMin=-big, yMax=big, zMin=-big, zMax=big)  # the two nodes on the x=EL_SIZE edge (loaded edge; x=10 by default)
 y0_nodes = nodes.getByBoundingBox(xMin=-big, xMax=big, yMin=-tol, yMax=tol, zMin=-big, zMax=big)  # the two nodes on the y=0 edge
 
 assembly.Set(name="X0-Edge", nodes=x0_nodes)  # register each bounding-box result as a named Abaqus Set, so it can be referenced by name in BCs/step/output requests below
@@ -172,14 +183,21 @@ assembly.Set(name="Y0-Edge", nodes=y0_nodes)
 # below), so automatic incrementation in step time is equivalently automatic incrementation
 # in displacement.
 # ---------------------------------------------------------------------------------
+if MAX_INC is None:  # the step of notebooks 01-03
+    increments = dict(
+        initialInc=0.01,  # increment size to attempt first
+        minInc=1e-5,  # smallest increment Abaqus is allowed to shrink to before giving up
+        maxNumInc=100,  # upper bound on how many increments the step is allowed to take
+    )
+else:  # notebook 07: capped increments, so the softening branch is recorded in fine steps
+    increments = dict(initialInc=MAX_INC, maxInc=MAX_INC,  # Abaqus refuses a first increment above the cap
+                      minInc=1e-9, maxNumInc=5000)  # never the limit that stops a run (as in notebook 06)
 model.StaticStep(
     name="Tension",
     previous="Initial",  # this step follows Abaqus's implicit "Initial" step (where the BCs below that use createStepName="Initial" are defined)
     nlgeom=ON if NLGEOM_ON else OFF,  # geometric nonlinearity -- see NB1 for what changes when this is OFF vs ON
     timePeriod=1.0,  # the step runs from time 0 to 1 -- arbitrary in itself, meaningful only through the Ramp amplitude mapping it onto displacement below
-    initialInc=0.01,  # increment size to attempt first
-    minInc=1e-5,  # smallest increment Abaqus is allowed to shrink to before giving up
-    maxNumInc=100,  # upper bound on how many increments the step is allowed to take
+    **increments
 )
 
 # ---------------------------------------------------------------------------------
@@ -275,6 +293,13 @@ results = {
     "hsn_ft": hsn_ft,
     "hsn_mt": hsn_mt,
 }
+if PARAMS["maxinc"]:  # notebook 07's runs also record their inputs and the solver's warnings
+    results.update({"size": EL_SIZE, "e1": E1, "maxinc": MAX_INC})
+    # The distinct warning texts of the message file, so a notebook can show what Abaqus reported
+    # without reading the (unpublished) .msg file itself.
+    with open("FiberTension.msg") as f:
+        results["msg_warnings"] = sorted(set(line.split("***WARNING:", 1)[1].strip()
+                                             for line in f if "***WARNING:" in line))
 out_dir = os.path.dirname(OUT_NAME)
 if out_dir and not os.path.isdir(out_dir):  # OUT_NAME may be a bare filename (no directory
     # component) -- nothing to create then. Abaqus's own Python kernel is Python 2, whose
