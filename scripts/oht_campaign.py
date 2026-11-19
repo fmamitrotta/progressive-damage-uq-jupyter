@@ -3,17 +3,17 @@
 oht_campaign.py
 ---------------
 Runs rows of a design CSV through the M1 open-hole tension model, several Abaqus jobs at a time,
-and saves one result JSON per sample. NB8's campaign driver.
+and saves one result JSON per sample. NB9's campaign driver.
 
 Plain Python 3 and never Abaqus-side (it does not import abaqus), so it runs unchanged on
 Windows and Linux, and may be imported or run from a shell. With no options it runs the whole
-training design, runs/nb08/design_train.csv, into runs/nb08/train:
+training design, runs/nb09/design_train.csv, into runs/nb09/train:
 
     python scripts/oht_campaign.py
     python scripts/oht_campaign.py --rows 0-31 --workers 5        # a part of it, 5 jobs at once
 
 How a sample runs. Abaqus/CAE builds the model only once, writing a template input file
-(runs/nb08/template/M1.inp, made by build_open_hole_tension.py with inp_only=1). Every sample
+(runs/nb09/template/M1.inp, made by build_open_hole_tension.py with inp_only=1). Every sample
 copies it with its own 15 material values on the three material data lines, solves it with
 `abaqus job=` and reads the results with `abaqus python extract_open_hole_tension.py`, in its own
 working folder, so concurrent jobs never share a file. No CAE session runs per job, so no CAE
@@ -54,27 +54,24 @@ from pathlib import Path
 import psutil
 
 SCRIPTS_DIR = Path(__file__).resolve().parent  # where the build and extraction scripts live
-RUNS_DIR = SCRIPTS_DIR.parent / "runs" / "nb08"
+RUNS_DIR = SCRIPTS_DIR.parent / "runs" / "nb09"
 TEMPLATE_DIR = RUNS_DIR / "template"
 
 # The 15 uncertain inputs, in design-CSV column order (NB6's names, as the build script reads them).
 INPUTS = ["E1", "E2", "nu12", "G12", "G23", "X_T", "X_C", "Y_T", "Y_C", "S_L", "S_T",
           "G_fT", "G_fC", "G_mT", "G_mC"]
 # The three material data lines of the input file: keyword line -> the inputs on the line after it, in
-# Abaqus's order. G13 = G12 in every sample: one variable (NB8).
+# Abaqus's order. G13 = G12 in every sample: one variable (NB9).
 MATERIAL_LINES = {"*Elastic, type=LAMINA": ("E1", "E2", "nu12", "G12", "G13", "G23"),
                   "*Damage Initiation, criterion=HASHIN": ("X_T", "X_C", "Y_T", "Y_C", "S_L", "S_T"),
                   "*Damage Evolution, type=ENERGY": ("G_fT", "G_fC", "G_mT", "G_mC")}
-MESHES = {"M1": (20, 15)}  # (ncirc, nrad): NB6's coarsest mesh, 1200 elements; the only one NB8 uses
-# Solver tokens of one job, from each of QSD and QXT, by cores per job (NB8's job logs).
+MESHES = {"M1": (20, 15)}  # (ncirc, nrad): NB6's coarsest mesh, 1200 elements; the only one NB9 uses
+# Solver tokens of one job, from each of QSD and QXT, by cores per job (NB9's job logs).
 TOKENS_PER_JOB = {1: 50, 2: 59, 4: 76, 6: 94}
-PEAK_RAM_GB = 0.65  # largest process-tree memory of one M1 job (NB8, with CAE in the tree)
-# A job checks out its tokens about 6-9 s after launch (NB8's job logs), so the licence server does not see it
+PEAK_RAM_GB = 0.65  # largest process-tree memory of one M1 job (NB9, with CAE in the tree)
+# A job checks out its tokens about 6-9 s after launch (NB9's job logs), so the licence server does not see it
 # at once: a job launched less than this many seconds ago counts as already holding its tokens.
 CHECKOUT_S = 30.0
-# A load drop is brittle if the load loses 20% within this share of the peak displacement (NB8, Part 4: every
-# run falls that far within 0.17 of it, 99% within 0.033).
-BRITTLE_DU = 0.1
 STATUS_FIELDS = ["sample", "accepted", "reason", "wall_s", "cpu_s", "peak_ram_mb", "tokens"]
 
 
@@ -85,8 +82,29 @@ def parse_rows(text):
     return list(range(int(a), int(b or a) + 1))
 
 
+def drop_failed_frame(r):
+    """Remove an unfinished job's failed last frame from its result, recompute the peak, and return r (changed in place).
+
+    A job that stops early ends with a frame at the same displacement as the one before it: Abaqus writes the last,
+    unconverged attempt of the failed increment at the step time of the last converged one. Its load is usually that
+    of the previous frame but can be garbage (NB9, Part 4: -4.5e11 N, 722 kN), which would be taken as the peak.
+    extract_open_hole_tension.py drops that frame itself since NB11; this function cleans the result files written
+    before (NB9's campaign), and does nothing to a clean one.
+    """
+    u2 = r.get("u2") or []
+    if r.get("completed", True) or len(u2) < 2 or u2[-1] != u2[-2]:
+        return r
+    # Drop the last frame of every per-frame history, then find the peak again.
+    for key in ("u2", "rf2", "allcd", "alldmd"):
+        r[key] = r[key][:-1]
+    peak = max(range(len(r["rf2"])), key=r["rf2"].__getitem__)
+    r.update(peak_index=peak, f_peak_n=r["rf2"][peak], u2_peak_mm=r["u2"][peak],
+             sigma_peak_mpa=r["rf2"][peak] / r["gross_area_mm2"])
+    return r
+
+
 def drop_displacement(r):
-    """Delta U_20 [mm]: displacement past the peak at which the load first falls below 80% of the peak.
+    """Displacement past the peak until the load first falls below 80% of the peak [mm].
 
     None if the load never falls that far (the job stopped before the drop).
     """
@@ -104,26 +122,18 @@ def drop_displacement(r):
 def acceptance_reason(r):
     """Return '' if a sample's result is usable, else why it is rejected.
 
-    Three tests (NB8, Part 4): first-ply failure was found; the load falls by at least 20% after the
-    peak (so the peak is not just the last recorded frame); and the viscous energy at the peak is
-    below 1% of the damage energy (NB6's check on the viscosity), or, if it is not, the load drop is
-    still brittle: it falls by 20% within BRITTLE_DU times the peak displacement. A job that stopped
-    before the target displacement passes if it stopped after such a drop: the outputs end at the peak.
+    Two tests (NB9, Part 4): first-ply failure was found, and the load falls by at least 20% after the
+    peak (so the peak is not just the last recorded frame). A job that stopped before the target
+    displacement passes if it stopped after such a drop: the outputs end at the peak. The viscous
+    energy ALLCD/ALLDMD at the peak is not a test: runs at 1% or more are kept (NB9, Part 4, Step 4)
+    and NB10 checks whether they change the surrogate.
     """
     # Test 1: the extraction found the first point where a Hashin criterion reaches 1.
     if r.get("fpf") is None:
         return "no first-ply failure found"
     # Test 2: the load falls below 80% of the peak at some later frame.
-    du = drop_displacement(r)
-    if du is None:
+    if drop_displacement(r) is None:
         return "no clear load drop after the peak"
-    # Test 3: viscous energy ALLCD below 1% of the damage energy ALLDMD at the peak frame, or a brittle drop
-    # (too much viscosity would smooth the drop out, NB6).
-    peak = r["peak_index"]
-    if r["alldmd"][peak] <= 0.0:
-        return "no damage energy at the peak"
-    if r["allcd"][peak] / r["alldmd"][peak] >= 0.01 and du >= BRITTLE_DU * r["u2_peak_mm"]:
-        return "ALLCD/ALLDMD at the peak is 1% or more and the load drop is gradual"
     return ""
 
 
@@ -266,19 +276,21 @@ class Launcher:
 def ensure_template(args, env):
     """Path of the template's JSON, building the template with Abaqus/CAE first if it is missing (run-or-load)."""
     # Load: the input file and its JSON (mesh statistics, element sizes Lc) are both there.
-    meta_path = TEMPLATE_DIR / (args.mesh + ".json")
-    if (TEMPLATE_DIR / (args.mesh + ".inp")).exists() and meta_path.exists():
+    template_dir = Path(args.template_dir).resolve()  # absolute: the build script runs from inside this folder
+    meta_path = template_dir / (args.mesh + ".json")
+    if (template_dir / (args.mesh + ".inp")).exists() and meta_path.exists():
         return meta_path
     # Run: the build script, in Abaqus/CAE through abqpy, writes the input file without solving (inp_only=1).
-    TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+    template_dir.mkdir(parents=True, exist_ok=True)
     ncirc, nrad = MESHES[args.mesh]
     print("building the template %s.inp with Abaqus/CAE ..." % args.mesh, flush=True)
-    with open(TEMPLATE_DIR / "driver_stdout.txt", "w") as out:
+    # --template-args adds build-script settings to the template (NB11: maxinc=0.002 maxnuminc=50000).
+    with open(template_dir / "driver_stdout.txt", "w") as out:
         subprocess.run([sys.executable, str(SCRIPTS_DIR / "build_open_hole_tension.py"), "ncirc=%d" % ncirc,
-                        "nrad=%d" % nrad, "light=1", "inp_only=1", "out=" + str(meta_path)],
-                       cwd=str(TEMPLATE_DIR), env=env, stdout=out, stderr=subprocess.STDOUT)
-    if not (TEMPLATE_DIR / (args.mesh + ".inp")).exists():  # success = the file exists; returncode is unreliable
-        sys.exit("no template written: see %s" % (TEMPLATE_DIR / "driver_stdout.txt"))
+                        "nrad=%d" % nrad, "light=1", "inp_only=1", "out=" + str(meta_path)] + args.template_args.split(),
+                       cwd=str(template_dir), env=env, stdout=out, stderr=subprocess.STDOUT)
+    if not (template_dir / (args.mesh + ".inp")).exists():  # success = the file exists; returncode is unreliable
+        sys.exit("no template written: see %s" % (template_dir / "driver_stdout.txt"))
     return meta_path
 
 
@@ -295,7 +307,7 @@ def run_sample(row_no, row, args, launcher, keep, meta, template):
     shutil.rmtree(work, ignore_errors=True)  # a killed job's leftovers (a .lck file) would block `abaqus job=`
     work.mkdir(parents=True)
     values = {k: float(row[k]) for k in INPUTS}
-    values["G13"] = values["G12"]  # G13 = G12 in every sample: one variable (NB8)
+    values["G13"] = values["G12"]  # G13 = G12 in every sample: one variable (NB9)
     (work / (name + ".inp")).write_text(patch_inp(template, values))
 
     # Wait for the launch slot and the tokens, then solve: `interactive` keeps the command running until the job ends.
@@ -335,7 +347,7 @@ def run_sample(row_no, row, args, launcher, keep, meta, template):
     if extract_json.exists():  # success = the output file exists; returncode is unreliable
         with open(extract_json) as f:
             result.update(json.load(f))
-        reason = acceptance_reason(result)
+        reason = acceptance_reason(drop_failed_frame(result))
     else:
         result.update({"completed": False, "fpf": None})
         reason = "no result file (job failed)"
@@ -360,7 +372,7 @@ def run_sample(row_no, row, args, launcher, keep, meta, template):
 
 
 def default_workers():
-    """Logical processors - 1 (one left for the machine), or fewer if memory is short (NB8, Part 2, Step 5)."""
+    """Logical processors - 1 (one left for the machine), or fewer if memory is short (NB9, Part 2, Step 5)."""
     # The smaller of the processor limit and the memory limit (total RAM over one job's peak), and at least 1.
     return max(1, min(psutil.cpu_count(logical=True) - 1, int(psutil.virtual_memory().total / 2**30 / PEAK_RAM_GB)))
 
@@ -378,9 +390,12 @@ def main():
     ap.add_argument("--abaqus", default="abaqus", help="abaqus command, if it is not `abaqus` on PATH")
     ap.add_argument("--reserve", type=float, default=0.0,
                     help="share of each solver pool left free for others, e.g. 0.1 (default: none)")
-    # 1 s plus the licence query (0.5-1.5 s) is one launch every ~2 s, enough for ~170 jobs of 350 s; NB8's 5 s
+    # 1 s plus the licence query (0.5-1.5 s) is one launch every ~2 s, enough for ~170 jobs of 350 s; NB9's 5 s
     # kept the 120-thread server at 59 jobs on average.
     ap.add_argument("--stagger", type=float, default=1.0, help="seconds between job launches (default: %(default)s)")
+    ap.add_argument("--template-dir", default=str(TEMPLATE_DIR), help="folder of the template input file (default: %(default)s)")
+    ap.add_argument("--template-args", default="", help="extra key=value tokens for the build script when the template is built, "
+                    "e.g. \"maxinc=0.002 maxnuminc=50000\" (NB11)")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
@@ -405,7 +420,7 @@ def main():
     meta_path = ensure_template(args, env)
     with open(meta_path) as f:
         meta = dict(json.load(f), meta_path=str(meta_path))
-    template = (TEMPLATE_DIR / (args.mesh + ".inp")).read_text()
+    template = (Path(args.template_dir) / (args.mesh + ".inp")).read_text()
     # status.csv is appended to, so a resumed campaign adds its lines below the earlier ones.
     status_path = out_dir / "status.csv"
     new_file = not status_path.exists()
@@ -449,10 +464,15 @@ def selftest():
     assert "first-ply" in acceptance_reason(dict(good, fpf=None))
     assert "load drop" in acceptance_reason(dict(good, rf2=[0, 10, 30, 29, 28]))  # no clear drop
     assert "load drop" in acceptance_reason(dict(good, rf2=[0, 10, 30], allcd=[0] * 3, alldmd=[1] * 3))  # peak last
-    # 5% viscous energy: kept if the 20% drop comes within 0.1 x 0.6 mm past the peak, rejected if later.
-    assert acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0])) == ""
-    assert "gradual" in acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0], u2=[0, 0.3, 0.6, 0.7, 0.8]))
-    assert "gradual" not in acceptance_reason(dict(good, u2=[0, 0.3, 0.6, 0.7, 0.8]))  # gradual, but ratio below 1%
+    # The viscous energy is not a test: 5% at the peak is kept, however late the drop comes.
+    assert acceptance_reason(dict(good, allcd=[0, 0, 0.05, 0, 0], u2=[0, 0.3, 0.6, 0.7, 0.8])) == ""
+    # Failed last frame (same u2 as the one before, garbage load): dropped, and the peak moves back to frame 2.
+    failed = dict(good, completed=False, rf2=[0, 10, 30, 12, 9e5], u2=[0, 0.3, 0.6, 0.7, 0.7], peak_index=4,
+                  f_peak_n=9e5, u2_peak_mm=0.7, gross_area_mm2=10.0)
+    assert "load drop" in acceptance_reason(failed)
+    fixed = drop_failed_frame(dict(failed))
+    assert fixed["rf2"] == [0, 10, 30, 12] and fixed["peak_index"] == 2 and fixed["f_peak_n"] == 30
+    assert acceptance_reason(fixed) == "" and drop_failed_frame(dict(good)) == good  # a completed job is untouched
     assert parse_log("Abaqus JOB x\nAbaqus 2023\nAbaqus/Standard checked out 50 tokens from DSLS") == ("2023", 50)
     assert parse_log("nothing here") == (None, None)
     # dslsstat: two pools per feature are summed; other features and non-token rows are ignored.
