@@ -59,7 +59,10 @@ Parameters (all optional, all `key=value` tokens, in any order):
     mesh_only=1     build and mesh the part, write mesh statistics and the mesh itself, and stop
     inp_only=1      build the model, write the job's input file (<stem>.inp) and a JSON with the
                     mesh statistics, every element's Lc, the gross area and the ply angles, and stop
-                    (the template of NB8's campaign, which solves it without CAE)
+                    (the template of NB9's campaign, which solves it without CAE)
+    damage_u2=<mm,mm,...>
+                    full runs (NB11): extra frames of the damage CSV, tagged "u<value>", the last
+                    frame at or below each applied displacement (default none)
     out=<path>      output JSON path (default oht_results.json). The Abaqus job runs inside the
                     same directory, named after the JSON's stem. Companion files with the same
                     stem: "_mesh.json" (node coordinates and element connectivity, written
@@ -114,6 +117,7 @@ PARAMS = {
     "light": "0",
     "mesh_only": "0",
     "inp_only": "0",
+    "damage_u2": "",
     "out": "oht_results.json",
 }
 argv = sys.argv
@@ -508,7 +512,7 @@ PARAMS_ECHO = {
 }
 
 # inp_only=1: write the input file (<job>.inp, next to the JSON) and stop. A campaign patches its
-# material data lines per sample and solves it without CAE (oht_campaign.py, NB8); the JSON carries
+# material data lines per sample and solves it without CAE (oht_campaign.py, NB9); the JSON carries
 # what that needs: every element's Lc for the sample's own ceiling, the gross area and the ply angles.
 if INP_ONLY:
     job.writeInput(consistencyChecking=OFF)
@@ -531,7 +535,8 @@ sys.path.insert(0, SCRIPT_DIR)
 from extract_open_hole_tension import extract
 
 extracted = extract(JOB_NAME, LIGHT, GROSS_AREA, physical_angles, element_centroids,
-                    None if LIGHT else STEM + "_damage.csv")
+                    None if LIGHT else STEM + "_damage.csv",
+                    [float(v) for v in PARAMS["damage_u2"].split(",") if v.strip()])
 
 # ---------------------------------------------------------------------------------
 # Main results JSON -- every CLI parameter echoed back, plus everything NB6 reads.

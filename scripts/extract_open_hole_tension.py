@@ -10,7 +10,7 @@ fiber-tension failure (and, for full runs, the per-ply damage).
 Abaqus-side (it imports odbAccess), and written for Abaqus 2023's Python 2.7. Two ways in:
   - build_open_hole_tension.py imports `extract` inside its Abaqus/CAE session, right after the
     job, so NB6's one-pass runs are unchanged;
-  - a campaign that solves a ready-made input file (NB8, oht_campaign.py) runs it without CAE,
+  - a campaign that solves a ready-made input file (NB9, oht_campaign.py) runs it without CAE,
     and so without a CAE licence token, in the job's own folder:
 
         abaqus python extract_open_hole_tension.py job=s0042 meta=<template>.json out=s0042_extract.json
@@ -70,12 +70,14 @@ def extrapolate_event(u2_list, rf2_list, crit_history, quadratic, gross_area, th
     return None
 
 
-def extract(job_name, light, gross_area, physical_angles, element_centroids=None, damage_csv=None):
-    """Read job `job_name` (in the current folder) and return the results dict NB6 and NB8 read.
+def extract(job_name, light, gross_area, physical_angles, element_centroids=None, damage_csv=None, damage_u2=()):
+    """Read job `job_name` (in the current folder) and return the results dict NB6 and NB9 read.
 
     gross_area [mm^2] turns loads into gross-section stresses; physical_angles (top ply first)
     says which plies are 0 deg. The damage CSV is written to `damage_csv` only for a full run
     (light=False), which also needs `element_centroids` {element label: (x, y)}.
+    damage_u2 (NB11): applied displacements [mm]; the CSV gets one more tagged frame "u<value>" for each, the last
+    frame at or below it (so the damage can be drawn at fixed displacements of different runs).
     """
     sta_tail = ""
     try:
@@ -124,6 +126,14 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
     allcd = [p[1] for p in energy_regions[0].historyOutputs["ALLCD"].data]
     alldmd = [p[1] for p in energy_regions[0].historyOutputs["ALLDMD"].data]
 
+    # A job that stops early (too many attempts in an increment) has Abaqus write the last, unconverged attempt as
+    # one more frame and history point, at the step time of the last converged increment, with a load that can be
+    # garbage (NB9: -4.5e11 N, 722 kN). Drop it, so that only converged increments are read.
+    n_frames = len(u2)
+    if not completed and n_frames >= 2 and u2_history[-1][0] == u2_history[-2][0]:
+        n_frames -= 1
+        u2, rf2_totals, allcd, alldmd = u2[:n_frames], rf2_totals[:n_frames], allcd[:n_frames], alldmd[:n_frames]
+
     peak_index = max(range(len(rf2_totals)), key=lambda i: rf2_totals[i])
 
     # Per-frame quantities: the model-wide maximum of each Hashin criterion, the maximum fiber-
@@ -136,8 +146,11 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
     crit_max_history = dict((name, []) for name in CRIT_NAMES)
     crit_ft_0deg_history = []
     ply_max_damage = dict((name, []) for name in DMG_NAMES)  # [frame][ply]
-    frames = step.frames
-    for frame in frames:
+    # Element label -> first frame at which any of its 0-deg section points reaches HSNFTCRT >= 1: the order in
+    # which fiber-tension damage initiates across the 0-deg plies (NB11).
+    ft0_first_frame = {}
+    frames = [step.frames[i] for i in range(n_frames)]  # an ODB frame sequence cannot be sliced
+    for frame_index, frame in enumerate(frames):
         for crit_name in CRIT_NAMES:
             m = 0.0
             m0 = 0.0
@@ -146,6 +159,10 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
                 m = max(m, bmax)
                 if crit_name == "HSNFTCRT" and ply_of(block.sectionPoint.number) in zero_deg_plies:
                     m0 = max(m0, bmax)
+                    if bmax >= 1.0:  # record the elements of this section point that have just initiated
+                        crossed = np.asarray(block.elementLabels)[np.ravel(block.data) >= 1.0]
+                        for label in crossed:
+                            ft0_first_frame.setdefault(int(label), frame_index)
             crit_max_history[crit_name].append(m)
             if crit_name == "HSNFTCRT":
                 crit_ft_0deg_history.append(m0)
@@ -181,6 +198,10 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
     if onset0 is not None:
         tagged_frames.append(("onset0", onset0["frame_before"] + 1))
     tagged_frames.append(("peak", peak_index))
+    for u_requested in damage_u2:
+        below = [i for i in range(len(u2)) if u2[i] <= u_requested]
+        if below:  # U2 never decreases, so the last such frame is the closest one below
+            tagged_frames.append(("u%.4f" % u_requested, below[-1]))
 
     if not light:  # a campaign has no damage field to tabulate
         with open(damage_csv, "w") as f:
@@ -214,6 +235,8 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
         "sigma_peak_mpa": rf2_totals[peak_index] / gross_area,
         "fpf": fpf,  # {u2_mm, rf2_n, sigma_mpa, frame_before, mode, ply}, or None
         "onset0": onset0,  # first 0-deg fiber-tension failure, same shape, or None
+        # [[element label, first frame with HSNFTCRT >= 1 in a 0-deg ply], ...], sorted by frame, then label.
+        "ft0_init_order": sorted([[label, f] for label, f in ft0_first_frame.items()], key=lambda e: (e[1], e[0])),
     }
     if not light:  # the per-frame histories are what makes a full JSON large
         results.update({
@@ -241,6 +264,18 @@ if __name__ == "__main__":
             i += 1
     with open(args["meta"]) as f:
         meta = json.load(f)
-    out = extract(args["job"], True, meta["gross_area_mm2"], meta["physical_angles"])
+    if "damage_csv" in args:
+        # Full mode on a finished job (NB11): also needs mesh=<run>_mesh.json (as written by a full run) for the
+        # element centroids, and takes damage_u2=0.55,0.60,... for the extra frames.
+        with open(args["mesh"]) as f:
+            mesh = json.load(f)
+        nodes = mesh["nodes"]
+        centroids = dict((label, (sum(nodes[k][0] for k in el) / 4.0, sum(nodes[k][1] for k in el) / 4.0))
+                         for label, el in zip(mesh["labels"], mesh["elements"]))
+        u_list = [float(v) for v in args.get("damage_u2", "").split(",") if v]
+        out = extract(args["job"], False, meta["gross_area_mm2"], meta["physical_angles"], centroids,
+                      args["damage_csv"], u_list)
+    else:
+        out = extract(args["job"], True, meta["gross_area_mm2"], meta["physical_angles"])
     with open(args["out"], "w") as f:
         json.dump(out, f)
