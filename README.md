@@ -6,6 +6,21 @@ The material starts from the smallest possible verification case — a single fi
 — and builds up gradually toward laminate-level analysis and, eventually, a stochastic layer
 on top of the deterministic damage model.
 
+## How this material is made, and how to read it
+
+This series is a documented learning path. I am learning uncertainty quantification applied to
+the progressive damage analysis of composite materials while building it, so it is a sourced study and not a reference text by an expert in the field.
+
+The text and code are drafted with Claude (Anthropic's AI assistant, used through Claude Code).
+I set the learning goal of every notebook, choose its sources and direct the work. I read
+each notebook end to end and then revise it over several rounds in which I question it and ask Claude for corrections and rewrites. Ultimately, I decide what stays. Claude is a tool here, not an author, and I am responsible for the
+content. Claims and equations from the literature are traced to published sources, cited inline with a link to the DOI.
+
+I do my best to catch errors, imprecisions and inconsistencies, but there is no guarantee that
+none are left. Please do not trust the material blindly: check the key results and the cited
+sources before relying on them. If you find a mistake, please open an issue or email me. I correct what I find
+and say so in the commit history.
+
 ## What this course is (and isn't)
 
 This course uses Abaqus's built-in progressive damage capabilities for fiber-reinforced
@@ -17,24 +32,24 @@ upfront:
   different from a fully self-contained numerical-methods course: the notebooks that build or
   solve a finite element model call Abaqus itself.
 - **Binder and Google Colab only work for the notebooks that need no Abaqus results at all:**
-  today that is notebooks 04, 05 and 07 (they compute everything themselves). Notebooks 01,
-  02, 03, 06 and 08 use Abaqus results, so they need either Abaqus or the result files (next
-  section).
+  today that is notebooks 04, 05 and 08 (they compute everything themselves). Notebooks 01,
+  02, 03, 06, 07, 09, 10 and 11 use Abaqus results, so they need either Abaqus or the result files
+  (next section).
 
 ## Reading or running the notebooks
 
 - **Reading:** every notebook is saved with its outputs, so you can read it on GitHub with
   nothing installed.
-- **Running:** set up the Python environment below. Notebooks 01, 02, 03, 06 and 08 work by
+- **Running:** set up the Python environment below. Notebooks 01, 02, 03, 06, 07, 09 and 11 work by
   *run or load*: Abaqus runs an analysis only if its result file under `runs/nbNN/` is
   missing, and otherwise loads the file. To run them you need **either**
-  - a licensed **Abaqus** installation, to run the analyses yourself (notebooks 06 and 08 take
+  - a licensed **Abaqus** installation, to run the analyses yourself (notebooks 06, 09 and 11 take
     hours and need many licence tokens), **or**
   - the **result files**. The `runs/` folder is not part of this repository (about 180 MB of
     JSON and CSV files). While the series is in development, email me at
     fma.mitrotta@bristol.ac.uk with the notebooks you want to run, and put the folders I send
     you in `runs/` at the repository root (`runs/nb01/`, `runs/nb02/`, ...). Notebook 03 also
-    reads the results of notebook 02.
+    reads the results of notebook 02, and notebooks 10 and 11 read those of notebook 09.
 
 ## Requirements
 
