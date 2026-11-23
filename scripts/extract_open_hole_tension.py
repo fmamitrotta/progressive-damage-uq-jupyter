@@ -17,6 +17,8 @@ Abaqus-side (it imports odbAccess), and written for Abaqus 2023's Python 2.7. Tw
 
     `meta` is the JSON that build_open_hole_tension.py writes with inp_only=1: it supplies the
     gross section area and the ply angles. Light mode is implied (no damage field is read).
+  - on a finished full run, `history_elements=705,750 history_csv=<file>` (NB11) writes the four
+    Hashin criteria and four damage variables of those elements at every frame, ply by ply.
 
 Never import this module in a notebook: `odbAccess` exists only inside Abaqus.
 """
@@ -249,6 +251,37 @@ def extract(job_name, light, gross_area, physical_angles, element_centroids=None
     return results
 
 
+def element_history(job_name, labels, history_csv):
+    """Write, for every frame of a finished full run, the four Hashin criteria and four damage variables of the elements
+    `labels`, ply by ply (NB11: which criterion of which ply an element meets first). One row per frame, element and ply:
+    frame,u2,element_label,ply,HSNFTCRT,HSNFCCRT,HSNMTCRT,HSNMCCRT,DAMAGEFT,DAMAGEFC,DAMAGEMT,DAMAGEMC.
+    """
+    odb = openOdb(job_name + ".odb", readOnly=True)
+    step = odb.steps["Tension"]
+    # U2 of the loaded edge (identical at every node of the set), one value per frame.
+    region = [r for key, r in step.historyRegions.items() if key.startswith("Node ")][0]
+    u2 = [p[1] for p in region.historyOutputs["U2"].data]
+    wanted = set(labels)
+    names = CRIT_NAMES + DMG_NAMES
+    with open(history_csv, "w") as f:
+        f.write("frame,u2,element_label,ply," + ",".join(names) + "\n")
+        for frame_index in range(len(step.frames)):
+            frame = step.frames[frame_index]
+            # (element, ply) -> value of each output, from the bulk blocks (one block per section point).
+            values = {}
+            for name in names:
+                for block in frame.fieldOutputs[name].bulkDataBlocks:
+                    ply = ply_of(block.sectionPoint.number)
+                    for label, v in zip(np.asarray(block.elementLabels), np.ravel(block.data)):
+                        if int(label) in wanted:
+                            values.setdefault((int(label), ply), {})[name] = float(v)
+            for (label, ply) in sorted(values):
+                row = values[(label, ply)]
+                f.write("%d,%.6f,%d,%d,%s\n" % (frame_index, u2[min(frame_index, len(u2) - 1)], label, ply,
+                                                 ",".join("%.6f" % row.get(n, 0.0) for n in names)))
+    odb.close()
+
+
 if __name__ == "__main__":
     # key=value tokens, in any order (also as "-key value", the shape Abaqus's launchers can produce).
     args, argv, i = {}, sys.argv[1:], 0
@@ -262,6 +295,11 @@ if __name__ == "__main__":
             i += 2
         else:
             i += 1
+    if "history_csv" in args:
+        # NB11: per-frame criteria and damage of a few elements of a finished full run (needs no meta file):
+        #   abaqus python extract_open_hole_tension.py job=a35_inc001 history_elements=705,750 history_csv=a35_inc001_history.csv
+        element_history(args["job"], [int(v) for v in args["history_elements"].split(",")], args["history_csv"])
+        sys.exit(0)
     with open(args["meta"]) as f:
         meta = json.load(f)
     if "damage_csv" in args:
