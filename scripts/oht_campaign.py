@@ -87,7 +87,7 @@ def drop_failed_frame(r):
 
     A job that stops early ends with a frame at the same displacement as the one before it: Abaqus writes the last,
     unconverged attempt of the failed increment at the step time of the last converged one. Its load is usually that
-    of the previous frame but can be garbage (NB9, Part 4: -4.5e11 N, 722 kN), which would be taken as the peak.
+    of the previous frame but can be garbage (NB9, Part 4), which would be taken as the peak.
     extract_open_hole_tension.py drops that frame itself since NB11; this function cleans the result files written
     before (NB9's campaign), and does nothing to a clean one.
     """
