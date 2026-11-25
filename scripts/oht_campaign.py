@@ -87,12 +87,13 @@ def drop_failed_frame(r):
 
     A job that stops early ends with a frame at the same displacement as the one before it: Abaqus writes the last,
     unconverged attempt of the failed increment at the step time of the last converged one. Its load is usually that
-    of the previous frame but can be garbage (NB9, Part 4), which would be taken as the peak.
-    extract_open_hole_tension.py drops that frame itself since NB11; this function cleans the result files written
-    before (NB9's campaign), and does nothing to a clean one.
+    of the previous frame but can be garbage, which would be taken as the peak.
+    extract_open_hole_tension.py drops that frame itself since NB11 and then writes `ft0_init_order` into the result;
+    this function cleans the result files written before, and does nothing to a clean one (a clean file can still end
+    on two equal float32 displacements, which are two converged increments, not a failed attempt).
     """
     u2 = r.get("u2") or []
-    if r.get("completed", True) or len(u2) < 2 or u2[-1] != u2[-2]:
+    if r.get("completed", True) or "ft0_init_order" in r or len(u2) < 2 or u2[-1] != u2[-2]:
         return r
     # Drop the last frame of every per-frame history, then find the peak again.
     for key in ("u2", "rf2", "allcd", "alldmd"):
@@ -473,6 +474,8 @@ def selftest():
     fixed = drop_failed_frame(dict(failed))
     assert fixed["rf2"] == [0, 10, 30, 12] and fixed["peak_index"] == 2 and fixed["f_peak_n"] == 30
     assert acceptance_reason(fixed) == "" and drop_failed_frame(dict(good)) == good  # a completed job is untouched
+    # A file the extraction already cleaned (it carries ft0_init_order) is untouched, even on two equal displacements.
+    assert drop_failed_frame(dict(failed, ft0_init_order=[705, 3]))["rf2"] == failed["rf2"]
     assert parse_log("Abaqus JOB x\nAbaqus 2023\nAbaqus/Standard checked out 50 tokens from DSLS") == ("2023", 50)
     assert parse_log("nothing here") == (None, None)
     # dslsstat: two pools per feature are summed; other features and non-token rows are ignored.
